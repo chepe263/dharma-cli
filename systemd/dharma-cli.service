@@ -1,0 +1,17 @@
+[Unit]
+Description=dharma-cli + KiroCrew (Docker)
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# __REPO_DIR__ lo rellena install-service.sh con la ruta real del repo.
+WorkingDirectory=__REPO_DIR__/docker
+ExecStart=/usr/bin/docker compose --env-file __REPO_DIR__/.env up -d
+ExecStop=/usr/bin/docker compose --env-file __REPO_DIR__/.env down
+TimeoutStartSec=0
+
+[Install]
+WantedBy=multi-user.target

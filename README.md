@@ -34,6 +34,28 @@ Kiro Crew  ──ACP (stdio)──►  dharma_cli.py  ──HTTP /v1/chat/comple
            ◄──streaming────                    ◄──────SSE (stream)──────────
 ```
 
+## Instalar en una máquina nueva (Docker — recomendado)
+
+La forma limpia y portable. Requiere solo Docker.
+
+```bash
+git clone <este-repo> dharma-cli && cd dharma-cli
+./install.sh          # pide API key/modelo, detecta la IP, arranca el contenedor
+./login.sh            # saca el token de login (una vez)
+```
+
+Abre `http://127.0.0.1:5477` (o `http://<IP-del-host>:5477` desde otra máquina).
+
+Para arrancar al boot (opcional):
+
+```bash
+./systemd/install-service.sh
+```
+
+Todo el estado (chats, config, memoria) vive en el volumen Docker
+`dharma-kirocrew-home` y sobrevive a reinicios y recreaciones del contenedor.
+No hay venvs ni rutas del sistema que alinear: el contenedor encapsula todo.
+
 ## Configuración
 
 Copia `.env.example` a `.env` y rellena:
@@ -42,7 +64,11 @@ Copia `.env.example` a `.env` y rellena:
 |---|---|---|
 | `DHARMA_BASE_URL` | endpoint OpenAI-compatible | `https://ollama.com/v1` |
 | `DHARMA_API_KEY` | token Bearer | tu key de `https://ollama.com/settings/keys` |
-| `DHARMA_MODEL` | id del modelo | `gpt-oss:20b` |
+| `DHARMA_MODEL` | id del modelo (default de la lista) | `gpt-oss:20b` |
+| `DHARMA_APPROVAL` | 1 = pedir permiso para tools sensibles, 0 = directo | `1` |
+| `DHARMA_MAX_ROUNDS` | máx. rondas de herramientas por turno | `25` |
+| `DHARMA_MAX_HISTORY` | máx. mensajes de historial (ventana deslizante, 0=∞) | `40` |
+| `DHARMA_PORT` | puerto del dashboard (Docker) | `5477` |
 
 Ollama Cloud tiene acceso API gratuito para pruebas. También sirve un Ollama local
 (`http://localhost:11434/v1`, la key se ignora) o el OpenAI oficial.

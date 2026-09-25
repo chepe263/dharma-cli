@@ -1,36 +1,34 @@
-# Experimento: KiroCrew oficial usando NUESTRO faux backend en vez de kiro-cli.
+# KiroCrew oficial usando el backend Dharma en vez de kiro-cli.
 #
-#   cd docker && docker compose up      (ver logs de arranque en vivo)
+#   ../install.sh          genera .env y arranca (recomendado en máquina nueva)
+#   docker compose up -d   arranca a mano (si ya tienes .env)
 #
-# Estrategia reverse-engineering: levantar, ver dónde falla, parchar el faux.
+# Valores portables: PUERTO y CORS_ORIGINS salen de variables (con default), así
+# este archivo NO lleva ninguna IP ni ruta atada a una máquina concreta.
 
 services:
   kirocrew:
     image: ghcr.io/kirodotdev/kirocrew:stable
     container_name: kirocrew-dharma
+    restart: unless-stopped
     ports:
-      # Expuesto en todas las interfaces para poder abrirlo desde otra máquina
-      # (tu Chrome fuera de esta VM). Experimento local desechable.
-      - "5477:5476"
+      - "${DHARMA_PORT:-5477}:5476"
     volumes:
-      # Monta el repo del faux dentro del contenedor (solo lectura).
+      # El repo del faux, montado solo-lectura.
       - ../:/opt/dharma-cli:ro
-      # Volumen PERSISTENTE del home de KiroCrew: chats, sesiones, config y estado
-      # sobreviven a 'docker compose up --force-recreate'. Sin esto, cada recreación
-      # borra toda la conversación (era el "perdí la charla anterior").
+      # Home persistente de KiroCrew: chats, sesiones, config y estado sobreviven
+      # a recreaciones del contenedor.
       - dharma-kirocrew-home:/home/kirocrew
     environment:
-      # EL DESVÍO: KiroCrew resolverá este binario en vez de kiro-cli.
+      # KiroCrew resolverá este binario en vez de kiro-cli.
       KIROCREW_KIRO_BIN: /opt/dharma-cli/dharma-cli.sh
       KIROCREW_BIND: 0.0.0.0
       KIROCREW_TELEMETRY_DISABLED: 1
-      # KiroCrew rechaza requests cuyo Host/Origin no esté permitido; declara
-      # desde dónde abres el navegador. Ajusta la IP a la de tu host.
-      KIROCREW_CORS_ORIGINS: "http://192.168.2.174:5477,http://localhost:5477,http://127.0.0.1:5477"
-      # El contenedor bloquea user-namespaces (unshare EPERM). Para este
-      # experimento desechable aceptamos el contenedor como única frontera.
+      # Orígenes permitidos para el navegador. install.sh lo rellena con la IP
+      # del host + localhost. Default seguro para acceso local.
+      KIROCREW_CORS_ORIGINS: "${KIROCREW_CORS_ORIGINS:-http://localhost:5477,http://127.0.0.1:5477}"
+      # El contenedor es la frontera de aislamiento en este modo.
       KIROCREW_ALLOW_UNSANDBOXED: "1"
-    # tini/entrypoint de la imagen se mantienen.
 
 volumes:
   dharma-kirocrew-home:
