@@ -68,6 +68,14 @@ def _handle_one_shot() -> bool:
         print("kiro-cli 2.24.0-faux")
         return True
 
+    # `kiro-cli acp --help`  -> KiroCrew's readiness probe runs this to confirm
+    # the `acp` subcommand exists (kiro_prerequisite._probe_acp_support). The
+    # real `acp` session still drives the protocol over stdio when invoked
+    # WITHOUT --help. Answer success so the acp-support gate clears.
+    if argv[0] == "acp" and "--help" in argv:
+        print("Usage: kiro-cli acp [OPTIONS]")
+        return True
+
     # `kiro-cli whoami [--format json]`  -> identity. We fake a satisfied login.
     if argv[0] == "whoami":
         if "--format" in argv and "json" in argv:
