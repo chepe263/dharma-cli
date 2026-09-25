@@ -50,6 +50,63 @@ API_KEY = os.environ.get("FAUX_API_KEY", "")
 MODEL = os.environ.get("FAUX_MODEL", "gpt-oss:20b")
 
 
+# ── one-shot commands (faux-ted from the real kiro-cli output) ─────────────────
+# KiroCrew runs these OUTSIDE ACP to check "is the agent installed / logged in".
+# If any fail, the dashboard shows a "not logged in (kiro-cli login)" card and
+# blocks. So the faux must answer them itself — this is what removes the Amazon
+# SSO requirement. Shapes captured verbatim from `kiro-cli 2.24.0` on the host.
+
+def _handle_one_shot() -> bool:
+    """If argv is a known one-shot command, print the faux answer and return
+    True (caller should exit 0). Otherwise return False (fall through to ACP)."""
+    argv = sys.argv[1:]
+    if not argv:
+        return False
+
+    # `kiro-cli --version`  -> "kiro-cli <ver>"
+    if argv[0] == "--version":
+        print("kiro-cli 2.24.0-faux")
+        return True
+
+    # `kiro-cli whoami [--format json]`  -> identity. We fake a satisfied login.
+    if argv[0] == "whoami":
+        if "--format" in argv and "json" in argv:
+            print(json.dumps({
+                "accountType": "FauxBackend",
+                "email": "faux@localhost",
+                "region": "local",
+                "startUrl": BASE_URL,
+            }))
+        else:
+            print("Logged in with faux backend")
+            print(f"Endpoint: {BASE_URL}")
+        return True
+
+    # `kiro-cli chat --list-models --format json`  -> model catalog.
+    # We advertise the single configured model (plus "auto" as default) in the
+    # exact shape KiroCrew parses (models[].model_name/model_id, default_model).
+    if argv[0] == "chat" and "--list-models" in argv:
+        catalog = {
+            "models": [
+                {"model_name": "auto", "description": "faux default", "model_id": "auto",
+                 "context_window_tokens": 128000, "rate_multiplier": 0.0, "rate_unit": "Free"},
+                {"model_name": MODEL, "description": f"faux backend model ({MODEL})",
+                 "model_id": MODEL, "context_window_tokens": 128000,
+                 "rate_multiplier": 0.0, "rate_unit": "Free"},
+            ],
+            "default_model": "auto",
+        }
+        print(json.dumps(catalog))
+        return True
+
+    # `kiro-cli login ...` — nothing to do; a faux backend needs no SSO.
+    if argv[0] == "login":
+        print("faux backend: no login needed (API key comes from .env)")
+        return True
+
+    return False
+
+
 # ── ACP stdio plumbing ─────────────────────────────────────────────────────────
 
 def _agent_from_argv() -> str:
@@ -126,6 +183,11 @@ def _extract_prompt_text(params: dict) -> str:
 # ── main ACP loop ──────────────────────────────────────────────────────────────
 
 def main() -> int:
+    # One-shot commands (--version / whoami / chat --list-models / login) are
+    # answered and we exit — they must NOT fall into the ACP stdin loop.
+    if _handle_one_shot():
+        return 0
+
     agent = _agent_from_argv()
     session_id = "faux-session-1"
     _log(f"started: base_url={BASE_URL} model={MODEL} agent={agent} auth={'yes' if API_KEY else 'no'}")
