@@ -456,6 +456,20 @@ def _tool_kind(name: str) -> str:
     return "execute"
 
 
+def _tool_title(name: str, args: dict) -> str:
+    """Título CORTO para el tool_call/permiso. NUNCA incluir args completo:
+    el contenido de un fs_write son miles de chars y hay un límite de 256 en la
+    ruta ACP (el título se validaba como 'tool name' y rebasaba -> RECHAZADO,
+    la verdadera causa del 'fs_write bloqueado'). Mostramos nombre + un dato
+    identificador (ruta/url/comando), recortado."""
+    hint = ""
+    if isinstance(args, dict):
+        hint = str(args.get("path") or args.get("url") or args.get("command")
+                   or args.get("query") or args.get("pattern") or "")
+    title = f"{name} {hint}".strip() if hint else name
+    return title[:200]
+
+
 def _request_permission(session_id, call_id, name, args) -> bool:
     """E2: ask KiroCrew to approve a sensitive tool. Returns True if approved."""
     global _PERM_ID
@@ -463,7 +477,7 @@ def _request_permission(session_id, call_id, name, args) -> bool:
     rid = _PERM_ID
     _send({"jsonrpc": "2.0", "id": rid, "method": "session/request_permission", "params": {
         "sessionId": session_id,
-        "toolCall": {"toolCallId": call_id, "title": f"{name} {args}", "kind": _tool_kind(name)},
+        "toolCall": {"toolCallId": call_id, "title": _tool_title(name, args), "kind": _tool_kind(name)},
         "options": [
             {"optionId": "allow_once", "name": "Allow once", "kind": "allow_once"},
             {"optionId": "reject_once", "name": "Reject", "kind": "reject_once"},
@@ -536,7 +550,7 @@ def _run_turn(prompt_text: str, session_id: str, msg_id) -> None:
                 _send({"jsonrpc": "2.0", "method": "session/update", "params": {
                     "sessionId": session_id,
                     "update": {"sessionUpdate": "tool_call", "toolCallId": call_id,
-                               "title": f"{name} {args}", "kind": _tool_kind(name),
+                               "title": _tool_title(name, args), "kind": _tool_kind(name),
                                "status": "pending", "rawInput": args},
                 }})
 
