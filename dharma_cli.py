@@ -164,6 +164,30 @@ def _agent_from_argv() -> str:
     return "kirocrew"
 
 
+def _model_from_argv() -> str:
+    """E1: KiroCrew passes the chosen model as `--model <id>` at spawn."""
+    argv = sys.argv[1:]
+    if "--model" in argv:
+        i = argv.index("--model")
+        if i + 1 < len(argv) and argv[i + 1] and argv[i + 1] != "auto":
+            return argv[i + 1]
+    return ""
+
+
+# E1: the active model for this process. Starts from --model (selector) or the
+# configured default; session/set_model updates it live.
+ACTIVE_MODEL = _model_from_argv() or MODEL
+
+# E2: require tool approval unless explicitly disabled (DHARMA_APPROVAL=0).
+APPROVAL = _cfg("DHARMA_APPROVAL", "FAUX_APPROVAL", "1") not in ("0", "false", "no", "")
+
+# E2: tools that MUTATE or execute need approval; pure reads run without asking.
+SENSITIVE_TOOLS = {"execute_bash", "fs_write", "fs_append", "str_replace", "delete_file"}
+
+# E2: monotonic id for our server->client permission requests.
+_PERM_ID = 9000
+
+
 def _send(obj: dict) -> None:
     sys.stdout.write(json.dumps(obj) + "\n")
     sys.stdout.flush()
@@ -297,9 +321,19 @@ def _run_tool(name: str, args: dict) -> str:
             path = _abs(args.get("path", ""))
             _os.remove(path)
             return f"borrado {path}"
-        if name in ("web_fetch", "web_search"):
-            # el faux no tiene salida a la web garantizada; devuelve aviso honesto
-            return f"({name} no implementada en este faux; usa execute_bash con curl si hay red)"
+        if name == "web_fetch":
+            # B2: GET real con límites de la doc oficial (10MB / 30s).
+            url = args.get("url", "")
+            r = urllib.request.Request(url, headers={"User-Agent": "dharma-cli"})
+            with urllib.request.urlopen(r, timeout=30) as resp:
+                raw = resp.read(10 * 1024 * 1024).decode("utf-8", "replace")
+            # extracción muy simple de texto: quita etiquetas HTML
+            text = _re.sub(r"<script.*?</script>|<style.*?</style>", " ", raw, flags=_re.S | _re.I)
+            text = _re.sub(r"<[^>]+>", " ", text)
+            text = _re.sub(r"\s+", " ", text).strip()
+            return text[:4000] or "(sin contenido)"
+        if name == "web_search":
+            return "(web_search no implementada: requiere una API de búsqueda; usa web_fetch de una URL, o execute_bash con curl)"
         return f"(herramienta desconocida: {name})"
     except Exception as e:  # noqa: BLE001
         return f"(error ejecutando {name}: {type(e).__name__}: {e})"
@@ -307,34 +341,112 @@ def _run_tool(name: str, args: dict) -> str:
 
 # ── llamada al modelo OpenAI-compatible (no streaming, para el bucle de tools) ──
 
-def _chat_once(messages: list) -> dict:
-    """One non-streaming /chat/completions call with tools. Returns the message
-    object of choices[0] (may carry content and/or tool_calls), or raises."""
+def _chat_stream(messages: list, on_text) -> dict:
+    """One /chat/completions call with tools, STREAMING (B1).
+
+    Calls on_text(piece) for each text delta so the UI writes live, and
+    accumulates any tool_calls (which arrive fragmented in streaming) into a
+    complete list. Returns the assistant message: {content, tool_calls}.
+    Uses ACTIVE_MODEL (E1) so the dashboard's model selector takes effect.
+    """
     url = f"{BASE_URL}/chat/completions"
     body = json.dumps({
-        "model": MODEL,
+        "model": ACTIVE_MODEL,
         "messages": messages,
         "tools": TOOLS_SPEC,
-        "stream": False,
+        "stream": True,
     }).encode("utf-8")
     headers = {"Content-Type": "application/json"}
     if API_KEY:
         headers["Authorization"] = f"Bearer {API_KEY}"
     req = urllib.request.Request(url, data=body, headers=headers, method="POST")
+
+    content_parts = []
+    tool_acc = {}  # index -> {id, name, arguments(str)}
     with urllib.request.urlopen(req, timeout=120) as resp:
-        data = json.loads(resp.read().decode("utf-8"))
-    return (data.get("choices") or [{}])[0].get("message") or {}
+        for raw in resp:
+            line = raw.decode("utf-8").strip()
+            if not line or not line.startswith("data:"):
+                continue
+            data = line[len("data:"):].strip()
+            if data == "[DONE]":
+                break
+            try:
+                chunk = json.loads(data)
+            except json.JSONDecodeError:
+                continue
+            choices = chunk.get("choices") or []
+            if not choices:
+                continue
+            delta = choices[0].get("delta") or {}
+            piece = delta.get("content")
+            if piece:
+                content_parts.append(piece)
+                on_text(piece)
+            for tcd in (delta.get("tool_calls") or []):
+                idx = tcd.get("index", 0)
+                slot = tool_acc.setdefault(idx, {"id": "", "name": "", "arguments": ""})
+                if tcd.get("id"):
+                    slot["id"] = tcd["id"]
+                fn = tcd.get("function") or {}
+                if fn.get("name"):
+                    slot["name"] = fn["name"]
+                if fn.get("arguments"):
+                    slot["arguments"] += fn["arguments"]
+
+    tool_calls = [{"id": s["id"] or f"call_{i}", "type": "function",
+                   "function": {"name": s["name"], "arguments": s["arguments"]}}
+                  for i, s in sorted(tool_acc.items())]
+    msg = {"role": "assistant", "content": "".join(content_parts) or None}
+    if tool_calls:
+        msg["tool_calls"] = tool_calls
+    return msg
+
+
+def _request_permission(session_id, call_id, name, args) -> bool:
+    """E2: ask KiroCrew to approve a sensitive tool. Returns True if approved."""
+    global _PERM_ID
+    _PERM_ID += 1
+    rid = _PERM_ID
+    _send({"jsonrpc": "2.0", "id": rid, "method": "session/request_permission", "params": {
+        "sessionId": session_id,
+        "toolCall": {"toolCallId": call_id, "title": f"{name} {args}", "kind": "execute"},
+        "options": [
+            {"optionId": "allow_once", "name": "Allow once", "kind": "allow_once"},
+            {"optionId": "reject_once", "name": "Reject", "kind": "reject_once"},
+        ],
+    }})
+    # wait for KiroCrew's response to this exact id
+    for line in sys.stdin:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            m = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if m.get("id") == rid and "method" not in m:
+            outcome = ((m.get("result") or {}).get("outcome") or {})
+            oc = outcome.get("outcome")
+            opt = outcome.get("optionId", "")
+            return oc == "selected" and "reject" not in str(opt)
+        # a cancel mid-wait means no
+        if m.get("method") == "session/cancel":
+            return False
+    return False
 
 
 # ── el bucle de function calling: prompt -> tools -> texto final ───────────────
 
 def _run_turn(prompt_text: str, session_id: str, msg_id) -> None:
-    """Drive one ACP turn with tool support. Emits agent_message_chunk /
-    tool_call / tool_call_update, then closes the prompt request with stopReason."""
+    """Drive one ACP turn: streaming text (B1), tool calls with approval (E2),
+    on the selected model (E1). Closes the prompt request with stopReason."""
     messages = [{"role": "user", "content": prompt_text}]
-    max_rounds = 6  # cota de seguridad contra bucles de herramientas
+    max_rounds = 6
 
     def emit_text(text: str) -> None:
+        if not text:
+            return
         _send({"jsonrpc": "2.0", "method": "session/update", "params": {
             "sessionId": session_id,
             "update": {"sessionUpdate": "agent_message_chunk",
@@ -343,17 +455,14 @@ def _run_turn(prompt_text: str, session_id: str, msg_id) -> None:
 
     try:
         for _round in range(max_rounds):
-            reply = _chat_once(messages)
+            reply = _chat_stream(messages, emit_text)  # texto ya sale en vivo
             tool_calls = reply.get("tool_calls") or []
 
             if not tool_calls:
-                # respuesta final de texto
-                emit_text(reply.get("content") or "")
                 _send({"jsonrpc": "2.0", "id": msg_id, "result": {"stopReason": "end_turn"}})
                 return
 
-            # el modelo pidió herramientas: anúncialas, ejecútalas, realimenta
-            messages.append(reply)  # el turno del asistente con los tool_calls
+            messages.append(reply)
             for tc in tool_calls:
                 fn = tc.get("function") or {}
                 name = fn.get("name", "")
@@ -363,27 +472,36 @@ def _run_turn(prompt_text: str, session_id: str, msg_id) -> None:
                     args = {}
                 call_id = tc.get("id") or f"dharma-tool-{name}"
 
-                # 1. anunciar a KiroCrew que se usa una herramienta (visible en la UI)
                 _send({"jsonrpc": "2.0", "method": "session/update", "params": {
                     "sessionId": session_id,
                     "update": {"sessionUpdate": "tool_call", "toolCallId": call_id,
                                "title": f"{name} {args}", "kind": "execute",
                                "status": "pending", "rawInput": args},
                 }})
-                # 2. ejecutar la herramienta (el backend ejecuta, no KiroCrew)
+
+                # E2: pedir permiso para herramientas sensibles
+                if APPROVAL and name in SENSITIVE_TOOLS:
+                    if not _request_permission(session_id, call_id, name, args):
+                        _send({"jsonrpc": "2.0", "method": "session/update", "params": {
+                            "sessionId": session_id,
+                            "update": {"sessionUpdate": "tool_call_update", "toolCallId": call_id,
+                                       "status": "failed",
+                                       "content": [{"type": "text", "text": "rechazada por el usuario"}]},
+                        }})
+                        messages.append({"role": "tool", "tool_call_id": tc.get("id"),
+                                         "name": name, "content": "(el usuario rechazó esta herramienta)"})
+                        continue
+
                 result = _run_tool(name, args)
-                # 3. cerrar el tool_call en la UI
                 _send({"jsonrpc": "2.0", "method": "session/update", "params": {
                     "sessionId": session_id,
                     "update": {"sessionUpdate": "tool_call_update", "toolCallId": call_id,
                                "status": "completed",
                                "content": [{"type": "text", "text": result[:500]}]},
                 }})
-                # 4. realimentar el resultado al modelo
                 messages.append({"role": "tool", "tool_call_id": tc.get("id"),
                                  "name": name, "content": result})
 
-        # se agotó el presupuesto de rondas
         emit_text("[dharma] límite de rondas de herramientas alcanzado.")
         _send({"jsonrpc": "2.0", "id": msg_id, "result": {"stopReason": "end_turn"}})
 
@@ -407,6 +525,7 @@ def _extract_prompt_text(params: dict) -> str:
 # ── main ACP loop ──────────────────────────────────────────────────────────────
 
 def main() -> int:
+    global ACTIVE_MODEL
     # One-shot commands (--version / whoami / chat --list-models / login) are
     # answered and we exit — they must NOT fall into the ACP stdin loop.
     if _handle_one_shot():
@@ -444,7 +563,17 @@ def main() -> int:
                 },
             }})
 
-        elif method in ("session/set_mode", "session/set_model"):
+        elif method == "session/set_model":
+            # E1: apply the model the dashboard selector chose, live.
+            p = msg.get("params") or {}
+            chosen = p.get("modelId") or p.get("model") or ""
+            if chosen and chosen != "auto":
+                ACTIVE_MODEL = chosen
+                _log(f"set_model: modelo activo -> {ACTIVE_MODEL}")
+            if msg_id is not None:
+                _send({"jsonrpc": "2.0", "id": msg_id, "result": {}})
+
+        elif method == "session/set_mode":
             if msg_id is not None:
                 _send({"jsonrpc": "2.0", "id": msg_id, "result": {}})
 
