@@ -1,0 +1,12 @@
+# secretos — nunca subir
+.env
+
+# python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# scratch / inventarios de la herramienta reejecutable
+superficie.*.json
+*.log
