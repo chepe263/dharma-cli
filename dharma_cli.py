@@ -91,13 +91,12 @@ def _list_models_catalog() -> dict:
         ids = [m.get("id") for m in (data.get("data") or []) if m.get("id")]
         if not ids:
             return _fallback()
-        # "auto" primero (default), luego cada modelo real del endpoint
-        models = [{"model_name": "auto", "description": "dharma default", "model_id": "auto",
-                   "context_window_tokens": 128000, "rate_multiplier": 0.0, "rate_unit": "Free"}]
-        for mid in ids:
-            models.append({"model_name": mid, "description": f"dharma: {mid}", "model_id": mid,
-                           "context_window_tokens": 128000, "rate_multiplier": 0.0, "rate_unit": "Free"})
-        return {"models": models, "default_model": "auto"}
+        # El modelo del .env (MODEL) es el DEFAULT y va PRIMERO; luego el resto.
+        ordered = [MODEL] + [m for m in ids if m != MODEL]
+        models = [{"model_name": mid, "description": f"dharma: {mid}", "model_id": mid,
+                   "context_window_tokens": 128000, "rate_multiplier": 0.0, "rate_unit": "Free"}
+                  for mid in ordered]
+        return {"models": models, "default_model": MODEL}
     except Exception as e:  # noqa: BLE001
         _log(f"list-models: /models falló ({type(e).__name__}: {e}); usando fallback")
         return _fallback()

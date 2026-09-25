@@ -15,6 +15,10 @@ services:
     volumes:
       # Monta el repo del faux dentro del contenedor (solo lectura).
       - ../:/opt/dharma-cli:ro
+      # Volumen PERSISTENTE del home de KiroCrew: chats, sesiones, config y estado
+      # sobreviven a 'docker compose up --force-recreate'. Sin esto, cada recreación
+      # borra toda la conversación (era el "perdí la charla anterior").
+      - dharma-kirocrew-home:/home/kirocrew
     environment:
       # EL DESVÍO: KiroCrew resolverá este binario en vez de kiro-cli.
       KIROCREW_KIRO_BIN: /opt/dharma-cli/dharma-cli.sh
@@ -26,3 +30,6 @@ services:
       # experimento desechable aceptamos el contenedor como única frontera.
       KIROCREW_ALLOW_UNSANDBOXED: "1"
     # tini/entrypoint de la imagen se mantienen.
+
+volumes:
+  dharma-kirocrew-home:
