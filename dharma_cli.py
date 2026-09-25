@@ -167,9 +167,37 @@ def _model_from_argv() -> str:
     return ""
 
 
-# E1: the active model for this process. Starts from --model (selector) or the
-# configured default; session/set_model updates it live.
-ACTIVE_MODEL = _model_from_argv() or MODEL
+# E1: the active model for this process. Starts from --model (selector), then a
+# previously persisted choice, then the configured default; session/set_model
+# updates it live AND persists it.
+_MODEL_STATE = os.path.join(
+    os.path.expanduser("~"), ".kiro", "crew", "dharma_active_model")
+
+
+def _load_saved_model() -> str:
+    """Modelo elegido en una sesión anterior (persiste entre reinicios)."""
+    try:
+        with open(_MODEL_STATE, "r", encoding="utf-8") as fh:
+            return fh.read().strip()
+    except OSError:
+        return ""
+
+
+def _save_model(model: str) -> None:
+    """Persistir el modelo elegido para el próximo arranque."""
+    try:
+        os.makedirs(os.path.dirname(_MODEL_STATE), exist_ok=True)
+        with open(_MODEL_STATE, "w", encoding="utf-8") as fh:
+            fh.write(model.strip())
+    except OSError as e:  # noqa: BLE001
+        _log(f"no pude persistir el modelo ({type(e).__name__}: {e})")
+
+
+ACTIVE_MODEL = _model_from_argv() or _load_saved_model() or MODEL
+
+# Robustez: modelos que el endpoint reportó que NO soportan 'tools'. Para ellos
+# reintentamos sin el campo tools (modo solo-texto) en vez de fallar feo.
+MODELS_WITHOUT_TOOLS = set()
 
 # E2: require tool approval unless explicitly disabled (DHARMA_APPROVAL=0).
 APPROVAL = os.environ.get("DHARMA_APPROVAL", "1") not in ("0", "false", "no", "")
@@ -409,12 +437,15 @@ def _chat_stream(messages: list, on_text) -> dict:
     Uses ACTIVE_MODEL (E1) so the dashboard's model selector takes effect.
     """
     url = f"{BASE_URL}/chat/completions"
-    body = json.dumps({
+    supports_tools = ACTIVE_MODEL not in MODELS_WITHOUT_TOOLS
+    payload = {
         "model": ACTIVE_MODEL,
         "messages": messages,
-        "tools": TOOLS_SPEC,
         "stream": True,
-    }).encode("utf-8")
+    }
+    if supports_tools:
+        payload["tools"] = TOOLS_SPEC
+    body = json.dumps(payload).encode("utf-8")
     headers = {"Content-Type": "application/json"}
     if API_KEY:
         headers["Authorization"] = f"Bearer {API_KEY}"
@@ -422,7 +453,27 @@ def _chat_stream(messages: list, on_text) -> dict:
 
     content_parts = []
     tool_acc = {}  # index -> {id, name, arguments(str)}
-    with urllib.request.urlopen(req, timeout=120) as resp:
+    try:
+        resp_cm = urllib.request.urlopen(req, timeout=120)
+    except urllib.error.HTTPError as e:
+        # Robustez: si el modelo no soporta 'tools', el endpoint suele devolver
+        # 400/422. Lo marcamos y reintentamos SIN tools (modo solo-texto) en vez
+        # de fallar feo. Cualquier otro error se propaga.
+        detail = ""
+        try:
+            detail = e.read().decode("utf-8", "replace").lower()
+        except Exception:  # noqa: BLE001
+            pass
+        if supports_tools and (e.code in (400, 422) or "tool" in detail):
+            _log(f"{ACTIVE_MODEL} no acepta tools ({e.code}); degradando a solo-texto")
+            MODELS_WITHOUT_TOOLS.add(ACTIVE_MODEL)
+            payload.pop("tools", None)
+            body = json.dumps(payload).encode("utf-8")
+            req = urllib.request.Request(url, data=body, headers=headers, method="POST")
+            resp_cm = urllib.request.urlopen(req, timeout=120)
+        else:
+            raise
+    with resp_cm as resp:
         for raw in resp:
             line = raw.decode("utf-8").strip()
             if not line or not line.startswith("data:"):
@@ -696,7 +747,8 @@ def main() -> int:
             chosen = p.get("modelId") or p.get("model") or ""
             if chosen and chosen != "auto":
                 ACTIVE_MODEL = chosen
-                _log(f"set_model: modelo activo -> {ACTIVE_MODEL}")
+                _save_model(chosen)  # persistir para el próximo arranque
+                _log(f"set_model: modelo activo -> {ACTIVE_MODEL} (persistido)")
             if msg_id is not None:
                 _send({"jsonrpc": "2.0", "id": msg_id, "result": {}})
 
