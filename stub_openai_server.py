@@ -34,8 +34,8 @@ class Handler(BaseHTTPRequestHandler):
                 "tool_calls": [{
                     "id": "call_1",
                     "type": "function",
-                    "function": {"name": "ejecutar_bash",
-                                 "arguments": json.dumps({"comando": "echo hola-desde-tool"})},
+                    "function": {"name": "execute_bash",
+                                 "arguments": json.dumps({"command": "echo hola-desde-tool"})},
                 }],
             }
         else:

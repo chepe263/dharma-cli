@@ -145,42 +145,47 @@ def _log(msg: str) -> None:
 # modelo hasta que produce la respuesta final de texto.
 
 TOOLS_SPEC = [
+    # Nombres CANÓNICOS tomados del agente real de KiroCrew
+    # (src/kiro_crew/config/defaults.json). En kiro-cli estas son herramientas
+    # built-in del agente; aquí las implementa el faux. Usar los mismos nombres
+    # hace que el comportamiento coincida con el KiroCrew real y que el modelo
+    # (que suele conocer estos nombres) las use mejor.
     {
         "type": "function",
         "function": {
-            "name": "ejecutar_bash",
-            "description": "Ejecuta un comando de shell en el contenedor y devuelve su salida.",
+            "name": "execute_bash",
+            "description": "Ejecuta un comando de shell y devuelve su salida (stdout+stderr).",
             "parameters": {
                 "type": "object",
-                "properties": {"comando": {"type": "string", "description": "El comando a ejecutar"}},
-                "required": ["comando"],
+                "properties": {"command": {"type": "string", "description": "El comando a ejecutar"}},
+                "required": ["command"],
             },
         },
     },
     {
         "type": "function",
         "function": {
-            "name": "leer_archivo",
-            "description": "Lee el contenido de un archivo de texto y lo devuelve.",
+            "name": "fs_read",
+            "description": "Lee el contenido de un archivo de texto.",
             "parameters": {
                 "type": "object",
-                "properties": {"ruta": {"type": "string", "description": "Ruta absoluta del archivo"}},
-                "required": ["ruta"],
+                "properties": {"path": {"type": "string", "description": "Ruta del archivo a leer"}},
+                "required": ["path"],
             },
         },
     },
     {
         "type": "function",
         "function": {
-            "name": "escribir_archivo",
-            "description": "Escribe (crea o sobrescribe) un archivo de texto con el contenido dado. Úsala para crear archivos como index.html.",
+            "name": "fs_write",
+            "description": "Crea o sobrescribe un archivo de texto con el contenido dado. Úsala para crear archivos como index.html.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "ruta": {"type": "string", "description": "Ruta del archivo a escribir (absoluta o relativa al home)"},
-                    "contenido": {"type": "string", "description": "El contenido completo del archivo"},
+                    "path": {"type": "string", "description": "Ruta del archivo (absoluta o relativa al home)"},
+                    "content": {"type": "string", "description": "Contenido completo del archivo"},
                 },
-                "required": ["ruta", "contenido"],
+                "required": ["path", "content"],
             },
         },
     },
@@ -188,27 +193,29 @@ TOOLS_SPEC = [
 
 
 def _run_tool(name: str, args: dict) -> str:
-    """Execute a faux tool locally. Returns the result string the model sees."""
+    """Execute a faux tool locally. Returns the result string the model sees.
+
+    Tool names mirror kiro-cli's built-ins (execute_bash / fs_read / fs_write).
+    """
     import subprocess
     import os as _os
     try:
-        if name == "ejecutar_bash":
-            cmd = args.get("comando", "")
+        if name == "execute_bash":
+            cmd = args.get("command", "")
             out = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=30)
             return (out.stdout + out.stderr)[:4000] or "(sin salida)"
-        if name == "leer_archivo":
-            with open(args.get("ruta", ""), "r", encoding="utf-8", errors="replace") as fh:
+        if name == "fs_read":
+            with open(args.get("path", ""), "r", encoding="utf-8", errors="replace") as fh:
                 return fh.read()[:4000]
-        if name == "escribir_archivo":
-            ruta = args.get("ruta", "")
-            contenido = args.get("contenido", "")
-            # ruta relativa -> respecto al home del proceso (el del contenedor)
-            if not _os.path.isabs(ruta):
-                ruta = _os.path.join(_os.path.expanduser("~"), ruta)
-            _os.makedirs(_os.path.dirname(ruta) or ".", exist_ok=True)
-            with open(ruta, "w", encoding="utf-8") as fh:
-                fh.write(contenido)
-            return f"escrito {len(contenido)} bytes en {ruta}"
+        if name == "fs_write":
+            path = args.get("path", "")
+            content = args.get("content", "")
+            if not _os.path.isabs(path):
+                path = _os.path.join(_os.path.expanduser("~"), path)
+            _os.makedirs(_os.path.dirname(path) or ".", exist_ok=True)
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(content)
+            return f"escrito {len(content)} bytes en {path}"
         return f"(herramienta desconocida: {name})"
     except Exception as e:  # noqa: BLE001
         return f"(error ejecutando {name}: {type(e).__name__}: {e})"
