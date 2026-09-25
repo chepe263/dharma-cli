@@ -7,7 +7,7 @@
 services:
   kirocrew:
     image: ghcr.io/kirodotdev/kirocrew:stable
-    container_name: kirocrew-faux
+    container_name: kirocrew-dharma
     ports:
       # Expuesto en todas las interfaces para poder abrirlo desde otra máquina
       # (tu Chrome fuera de esta VM). Experimento local desechable.
@@ -17,7 +17,7 @@ services:
       - ../:/opt/faux-kiro-acp:ro
     environment:
       # EL DESVÍO: KiroCrew resolverá este binario en vez de kiro-cli.
-      KIROCREW_KIRO_BIN: /opt/faux-kiro-acp/faux-kiro-cli.sh
+      KIROCREW_KIRO_BIN: /opt/faux-kiro-acp/dharma-cli.sh
       KIROCREW_BIND: 0.0.0.0
       # KiroCrew rechaza requests cuyo Host/Origin no esté permitido; declara
       # desde dónde abres el navegador. Ajusta la IP a la de tu host.

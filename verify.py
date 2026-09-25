@@ -8,7 +8,7 @@ the clone at commit 07a05a2): initialize -> session/new -> session/set_mode ->
 session/prompt, reading streamed agent_message_chunk notifications + stopReason.
 
 Run:  python3 verify.py
-For a real run against Ollama Cloud, set .env and use faux_kiro_cli.py directly
+For a real run against Ollama Cloud, set .env and use dharma_cli.py directly
 from Kiro Crew instead (see README).
 """
 import json
@@ -41,7 +41,7 @@ def main() -> int:
     env["FAUX_API_KEY"] = "stub-ignored"
     env["FAUX_MODEL"] = "stub-model"
     proc = subprocess.Popen(
-        [sys.executable, "faux_kiro_cli.py", "--agent", AGENT],
+        [sys.executable, "dharma_cli.py", "--agent", AGENT],
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, bufsize=1,
         cwd=here, env=env,
     )

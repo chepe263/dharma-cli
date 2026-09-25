@@ -1,13 +1,19 @@
-# faux-kiro-acp
+# dharma-cli
 
 Un binario que se hace pasar por `kiro-cli` ante **Kiro Crew**, pero que por
 dentro habla con **cualquier endpoint compatible con OpenAI** (Ollama Cloud, un
 Ollama local, OpenAI, LM Studio…). Objetivo: correr Kiro Crew con tu propio
 modelo, sin el servicio de Amazon y sin lock-in.
 
-> Estado: **MVP / prueba de concepto.** El turno de conversación de texto funciona
-> de punta a punta (verificado). Las herramientas (function calling) y el flujo de
-> instalación por la web son los siguientes pasos — ver *Roadmap*.
+> **El nombre.** En honor a Dharma & Greg: la esencia de Dharma es ayudar a los
+> demás, y este shim hace justo eso — ayuda, en silencio, a que Kiro Crew corra
+> con el modelo que tú elijas, poniéndose en el lugar del kiro-cli real sin que
+> nada aguas abajo note la diferencia.
+
+> Estado: **funciona de punta a punta.** Chat de texto, comandos de arranque sin
+> Amazon, function calling / herramientas (crear, leer, editar, ejecutar), todo
+> verificado corriendo en Docker por la interfaz web. Ver *Roadmap* para lo que
+> falta pulir.
 
 ## Cómo funciona
 
@@ -18,7 +24,7 @@ una llamada a `<BASE_URL>/chat/completions` y devuelve la respuesta en streaming
 como notificaciones ACP. Kiro Crew no nota la diferencia.
 
 ```
-Kiro Crew  ──ACP (stdio)──►  faux_kiro_cli.py  ──HTTP /v1/chat/completions──►  tu modelo
+Kiro Crew  ──ACP (stdio)──►  dharma_cli.py  ──HTTP /v1/chat/completions──►  tu modelo
            ◄──streaming────                    ◄──────SSE (stream)──────────
 ```
 
@@ -82,7 +88,7 @@ paso — ver *Roadmap*.
 
 ## Archivos
 
-- `faux_kiro_cli.py` — el faux backend (ACP ↔ OpenAI-compatible). Sin dependencias.
+- `dharma_cli.py` — el faux backend (ACP ↔ OpenAI-compatible). Sin dependencias.
 - `verify.py` — verificador de protocolo de capa 1.
 - `stub_openai_server.py` — endpoint OpenAI falso, solo para las pruebas offline.
 - `.env.example` — plantilla de configuración.

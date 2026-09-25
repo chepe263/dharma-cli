@@ -5,4 +5,4 @@
 # to the faux backend, which answers both the one-shot commands and the ACP
 # session. The faux reads its own config from .env in this directory.
 cd "$(dirname "$0")" || exit 1
-exec python3 faux_kiro_cli.py "$@"
+exec python3 dharma_cli.py "$@"

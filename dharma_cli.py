@@ -1,16 +1,21 @@
 #!/usr/bin/env python3
-"""faux kiro-cli — a fake kiro-cli that speaks ACP but talks to any
+"""dharma-cli — a stand-in for kiro-cli that speaks ACP but talks to any
 OpenAI-compatible endpoint (Ollama Cloud, a local Ollama, OpenAI, LM Studio, …).
+
+Named in honor of Dharma & Greg: Dharma's whole nature is helping others, and
+this shim helps — it lets Kiro Crew run on a model of your own, quietly standing
+in for the real kiro-cli so nothing downstream notices the difference.
 
 Kiro Crew launches this exactly as it launches the real `kiro-cli acp`. It never
 notices the difference: it sends ACP JSON-RPC frames over stdio and gets streamed
 text back. Inside, this process forwards each turn to `<BASE_URL>/chat/completions`
 and streams the reply back as ACP `agent_message_chunk` notifications.
 
-CONFIG (via .env in the working dir, or real environment variables):
-  FAUX_BASE_URL   OpenAI-compatible base, e.g. https://ollama.com/v1   (no trailing slash needed)
-  FAUX_API_KEY    Bearer token for that endpoint (Ollama Cloud: your ollama.com API key)
-  FAUX_MODEL      model id, e.g. gpt-oss:20b  or  gemma4:cloud
+CONFIG (via .env in the working dir, or real environment variables). New DHARMA_*
+names are preferred; the older FAUX_* names still work for back-compat:
+  DHARMA_BASE_URL / FAUX_BASE_URL   OpenAI-compatible base, e.g. https://ollama.com/v1
+  DHARMA_API_KEY  / FAUX_API_KEY    Bearer token (Ollama Cloud: your ollama.com API key)
+  DHARMA_MODEL    / FAUX_MODEL       model id, e.g. gpt-oss:20b  or  gemma4:cloud
 
 No third-party dependencies — stdlib only (urllib). Python 3.8+.
 
@@ -45,9 +50,16 @@ def _load_dotenv(path: str = ".env") -> None:
 
 
 _load_dotenv()
-BASE_URL = os.environ.get("FAUX_BASE_URL", "https://ollama.com/v1").rstrip("/")
-API_KEY = os.environ.get("FAUX_API_KEY", "")
-MODEL = os.environ.get("FAUX_MODEL", "gpt-oss:20b")
+
+
+def _cfg(new_key: str, old_key: str, default: str = "") -> str:
+    """Prefer the new DHARMA_* name; fall back to the legacy FAUX_* name."""
+    return os.environ.get(new_key) or os.environ.get(old_key) or default
+
+
+BASE_URL = _cfg("DHARMA_BASE_URL", "FAUX_BASE_URL", "https://ollama.com/v1").rstrip("/")
+API_KEY = _cfg("DHARMA_API_KEY", "FAUX_API_KEY", "")
+MODEL = _cfg("DHARMA_MODEL", "FAUX_MODEL", "gpt-oss:20b")
 
 
 # ── one-shot commands (faux-ted from the real kiro-cli output) ─────────────────
@@ -65,7 +77,7 @@ def _handle_one_shot() -> bool:
 
     # `kiro-cli --version`  -> "kiro-cli <ver>"
     if argv[0] == "--version":
-        print("kiro-cli 2.24.0-faux")
+        print("kiro-cli 2.24.0-dharma")
         return True
 
     # `kiro-cli acp --help`  -> KiroCrew's readiness probe runs this to confirm
@@ -80,13 +92,13 @@ def _handle_one_shot() -> bool:
     if argv[0] == "whoami":
         if "--format" in argv and "json" in argv:
             print(json.dumps({
-                "accountType": "FauxBackend",
-                "email": "faux@localhost",
+                "accountType": "Dharma",
+                "email": "dharma@localhost",
                 "region": "local",
                 "startUrl": BASE_URL,
             }))
         else:
-            print("Logged in with faux backend")
+            print("Logged in with dharma backend")
             print(f"Endpoint: {BASE_URL}")
         return True
 
@@ -96,9 +108,9 @@ def _handle_one_shot() -> bool:
     if argv[0] == "chat" and "--list-models" in argv:
         catalog = {
             "models": [
-                {"model_name": "auto", "description": "faux default", "model_id": "auto",
+                {"model_name": "auto", "description": "dharma default", "model_id": "auto",
                  "context_window_tokens": 128000, "rate_multiplier": 0.0, "rate_unit": "Free"},
-                {"model_name": MODEL, "description": f"faux backend model ({MODEL})",
+                {"model_name": MODEL, "description": f"dharma backend model ({MODEL})",
                  "model_id": MODEL, "context_window_tokens": 128000,
                  "rate_multiplier": 0.0, "rate_unit": "Free"},
             ],
@@ -109,7 +121,7 @@ def _handle_one_shot() -> bool:
 
     # `kiro-cli login ...` — nothing to do; a faux backend needs no SSO.
     if argv[0] == "login":
-        print("faux backend: no login needed (API key comes from .env)")
+        print("dharma: no login needed (API key from .env)")
         return True
 
     return False
@@ -133,7 +145,7 @@ def _send(obj: dict) -> None:
 
 def _log(msg: str) -> None:
     # stderr is diagnostic only; Kiro Crew reads it as warnings, never as content.
-    sys.stderr.write(f"[faux] {msg}\n")
+    sys.stderr.write(f"[dharma] {msg}\n")
     sys.stderr.flush()
 
 
@@ -323,7 +335,7 @@ def _run_turn(prompt_text: str, session_id: str, msg_id) -> None:
                     args = json.loads(fn.get("arguments") or "{}")
                 except json.JSONDecodeError:
                     args = {}
-                call_id = tc.get("id") or f"faux-tool-{name}"
+                call_id = tc.get("id") or f"dharma-tool-{name}"
 
                 # 1. anunciar a KiroCrew que se usa una herramienta (visible en la UI)
                 _send({"jsonrpc": "2.0", "method": "session/update", "params": {
@@ -346,16 +358,16 @@ def _run_turn(prompt_text: str, session_id: str, msg_id) -> None:
                                  "name": name, "content": result})
 
         # se agotó el presupuesto de rondas
-        emit_text("[faux-backend] límite de rondas de herramientas alcanzado.")
+        emit_text("[dharma] límite de rondas de herramientas alcanzado.")
         _send({"jsonrpc": "2.0", "id": msg_id, "result": {"stopReason": "end_turn"}})
 
     except urllib.error.HTTPError as e:
         detail = e.read().decode("utf-8", "replace")[:300]
-        emit_text(f"[faux-backend ERROR {e.code}] {detail}")
+        emit_text(f"[dharma ERROR {e.code}] {detail}")
         _send({"jsonrpc": "2.0", "id": msg_id, "result": {"stopReason": "end_turn"}})
         _log(f"HTTP {e.code}: {detail}")
     except Exception as e:  # noqa: BLE001
-        emit_text(f"[faux-backend ERROR] {type(e).__name__}: {e}")
+        emit_text(f"[dharma ERROR] {type(e).__name__}: {e}")
         _send({"jsonrpc": "2.0", "id": msg_id, "result": {"stopReason": "end_turn"}})
         _log(f"error en el turno: {e}")
 
@@ -375,7 +387,7 @@ def main() -> int:
         return 0
 
     agent = _agent_from_argv()
-    session_id = "faux-session-1"
+    session_id = "dharma-session-1"
     _log(f"started: base_url={BASE_URL} model={MODEL} agent={agent} auth={'yes' if API_KEY else 'no'}")
 
     for line in sys.stdin:
@@ -394,7 +406,7 @@ def main() -> int:
             _send({"jsonrpc": "2.0", "id": msg_id, "result": {
                 "protocolVersion": PROTOCOL_VERSION,
                 "agentCapabilities": {"loadSession": False},
-                "agentInfo": {"name": "faux-kiro-cli", "version": "0.1.0"},
+                "agentInfo": {"name": "dharma-cli", "version": "0.1.0"},
             }})
 
         elif method == "session/new":

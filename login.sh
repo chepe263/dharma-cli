@@ -4,7 +4,7 @@
 # baile de "copiar el link, cambiar localhost por la IP y el puerto".
 #
 # Uso:
-#   ./login.sh                 # contenedor por defecto: kirocrew-faux
+#   ./login.sh                 # contenedor por defecto: kirocrew-dharma
 #   ./login.sh <contenedor>    # otro nombre
 #   TTL=4h ./login.sh          # otra vigencia (default 2h)
 #
@@ -12,7 +12,7 @@
 # credencial), que es una acción del operador.
 set -euo pipefail
 
-CONTAINER="${1:-kirocrew-faux}"
+CONTAINER="${1:-kirocrew-dharma}"
 TTL="${TTL:-2h}"
 
 # 1. Puerto del host que mapea al 5476 del contenedor (ej. "0.0.0.0:5477" -> 5477).
