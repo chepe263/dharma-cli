@@ -144,78 +144,124 @@ def _log(msg: str) -> None:
 # KiroCrew como un `tool_call`/`tool_call_update`, y realimenta el resultado al
 # modelo hasta que produce la respuesta final de texto.
 
+def _tool(name, desc, props, required):
+    return {"type": "function", "function": {
+        "name": name, "description": desc,
+        "parameters": {"type": "object", "properties": props, "required": required},
+    }}
+
+
+# Catálogo alineado con la doc oficial https://kiro.dev/docs/tools/
+# (nombres y categorías canónicos: read / write / shell / web). En kiro-cli son
+# built-in del agente; aquí las implementa el faux con los MISMOS nombres.
 TOOLS_SPEC = [
-    # Nombres CANÓNICOS tomados del agente real de KiroCrew
-    # (src/kiro_crew/config/defaults.json). En kiro-cli estas son herramientas
-    # built-in del agente; aquí las implementa el faux. Usar los mismos nombres
-    # hace que el comportamiento coincida con el KiroCrew real y que el modelo
-    # (que suele conocer estos nombres) las use mejor.
-    {
-        "type": "function",
-        "function": {
-            "name": "execute_bash",
-            "description": "Ejecuta un comando de shell y devuelve su salida (stdout+stderr).",
-            "parameters": {
-                "type": "object",
-                "properties": {"command": {"type": "string", "description": "El comando a ejecutar"}},
-                "required": ["command"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "fs_read",
-            "description": "Lee el contenido de un archivo de texto.",
-            "parameters": {
-                "type": "object",
-                "properties": {"path": {"type": "string", "description": "Ruta del archivo a leer"}},
-                "required": ["path"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "fs_write",
-            "description": "Crea o sobrescribe un archivo de texto con el contenido dado. Úsala para crear archivos como index.html.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "path": {"type": "string", "description": "Ruta del archivo (absoluta o relativa al home)"},
-                    "content": {"type": "string", "description": "Contenido completo del archivo"},
-                },
-                "required": ["path", "content"],
-            },
-        },
-    },
+    # ── shell ──
+    _tool("execute_bash", "Ejecuta un comando de shell y devuelve su salida.",
+          {"command": {"type": "string", "description": "El comando a ejecutar"}}, ["command"]),
+    # ── read ──
+    _tool("fs_read", "Lee el contenido de un archivo de texto.",
+          {"path": {"type": "string", "description": "Ruta del archivo"}}, ["path"]),
+    _tool("list_directory", "Lista el contenido de un directorio.",
+          {"path": {"type": "string", "description": "Ruta del directorio"}}, ["path"]),
+    _tool("file_search", "Búsqueda difusa de rutas de archivo (glob).",
+          {"pattern": {"type": "string", "description": "Patrón glob, ej **/*.py"},
+           "path": {"type": "string", "description": "Directorio base (opcional)"}}, ["pattern"]),
+    _tool("grep_search", "Búsqueda de contenido por regex en archivos.",
+          {"pattern": {"type": "string", "description": "Regex a buscar"},
+           "path": {"type": "string", "description": "Directorio base (opcional)"}}, ["pattern"]),
+    # ── write ──
+    _tool("fs_write", "Crea o sobrescribe un archivo con el contenido dado.",
+          {"path": {"type": "string", "description": "Ruta del archivo"},
+           "content": {"type": "string", "description": "Contenido completo"}}, ["path", "content"]),
+    _tool("fs_append", "Añade contenido al final de un archivo existente.",
+          {"path": {"type": "string", "description": "Ruta del archivo"},
+           "content": {"type": "string", "description": "Contenido a añadir"}}, ["path", "content"]),
+    _tool("str_replace", "Reemplaza texto exacto en un archivo (edición puntual).",
+          {"path": {"type": "string"}, "old": {"type": "string", "description": "Texto a reemplazar"},
+           "new": {"type": "string", "description": "Texto nuevo"}}, ["path", "old", "new"]),
+    _tool("delete_file", "Borra un archivo.",
+          {"path": {"type": "string", "description": "Ruta del archivo a borrar"}}, ["path"]),
+    # ── web ──
+    _tool("web_fetch", "Descarga y extrae el texto de una URL.",
+          {"url": {"type": "string", "description": "URL a descargar"}}, ["url"]),
+    _tool("web_search", "Busca en la web información actual.",
+          {"query": {"type": "string", "description": "Consulta de búsqueda"}}, ["query"]),
 ]
 
 
 def _run_tool(name: str, args: dict) -> str:
-    """Execute a faux tool locally. Returns the result string the model sees.
-
-    Tool names mirror kiro-cli's built-ins (execute_bash / fs_read / fs_write).
-    """
+    """Execute a faux tool locally. Names mirror kiro.dev/docs/tools."""
     import subprocess
     import os as _os
+    import glob as _glob
+    import re as _re
+
+    def _abs(p):
+        return p if _os.path.isabs(p) else _os.path.join(_os.path.expanduser("~"), p)
+
     try:
         if name == "execute_bash":
-            cmd = args.get("command", "")
-            out = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=30)
+            out = subprocess.run(args.get("command", ""), shell=True,
+                                 capture_output=True, text=True, timeout=30)
             return (out.stdout + out.stderr)[:4000] or "(sin salida)"
         if name == "fs_read":
-            with open(args.get("path", ""), "r", encoding="utf-8", errors="replace") as fh:
+            with open(_abs(args.get("path", "")), "r", encoding="utf-8", errors="replace") as fh:
                 return fh.read()[:4000]
+        if name == "list_directory":
+            base = _abs(args.get("path", "."))
+            return "\n".join(sorted(_os.listdir(base)))[:4000] or "(vacío)"
+        if name == "file_search":
+            base = _abs(args.get("path", "."))
+            hits = _glob.glob(_os.path.join(base, "**", args.get("pattern", "*")), recursive=True)
+            return "\n".join(hits[:100])[:4000] or "(sin coincidencias)"
+        if name == "grep_search":
+            base = _abs(args.get("path", "."))
+            rx = _re.compile(args.get("pattern", ""))
+            found = []
+            for root, _dirs, files in _os.walk(base):
+                for f in files:
+                    fp = _os.path.join(root, f)
+                    try:
+                        with open(fp, "r", encoding="utf-8", errors="ignore") as fh:
+                            for i, ln in enumerate(fh, 1):
+                                if rx.search(ln):
+                                    found.append(f"{fp}:{i}: {ln.strip()}")
+                                    if len(found) >= 100:
+                                        raise StopIteration
+                    except (OSError, StopIteration):
+                        if len(found) >= 100:
+                            break
+                if len(found) >= 100:
+                    break
+            return "\n".join(found)[:4000] or "(sin coincidencias)"
         if name == "fs_write":
-            path = args.get("path", "")
-            content = args.get("content", "")
-            if not _os.path.isabs(path):
-                path = _os.path.join(_os.path.expanduser("~"), path)
+            path = _abs(args.get("path", ""))
             _os.makedirs(_os.path.dirname(path) or ".", exist_ok=True)
             with open(path, "w", encoding="utf-8") as fh:
-                fh.write(content)
-            return f"escrito {len(content)} bytes en {path}"
+                fh.write(args.get("content", ""))
+            return f"escrito {len(args.get('content',''))} bytes en {path}"
+        if name == "fs_append":
+            path = _abs(args.get("path", ""))
+            with open(path, "a", encoding="utf-8") as fh:
+                fh.write(args.get("content", ""))
+            return f"añadido a {path}"
+        if name == "str_replace":
+            path = _abs(args.get("path", ""))
+            with open(path, "r", encoding="utf-8") as fh:
+                data = fh.read()
+            old = args.get("old", "")
+            if old not in data:
+                return "(no se encontró el texto a reemplazar)"
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(data.replace(old, args.get("new", ""), 1))
+            return f"reemplazado en {path}"
+        if name == "delete_file":
+            path = _abs(args.get("path", ""))
+            _os.remove(path)
+            return f"borrado {path}"
+        if name in ("web_fetch", "web_search"):
+            # el faux no tiene salida a la web garantizada; devuelve aviso honesto
+            return f"({name} no implementada en este faux; usa execute_bash con curl si hay red)"
         return f"(herramienta desconocida: {name})"
     except Exception as e:  # noqa: BLE001
         return f"(error ejecutando {name}: {type(e).__name__}: {e})"
