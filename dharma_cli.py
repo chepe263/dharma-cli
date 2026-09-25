@@ -203,7 +203,10 @@ SESSION_MESSAGES = [{
         "herramientas: execute_bash, fs_read, fs_write, fs_append, str_replace, "
         "delete_file, list_directory, file_search, grep_search, web_fetch. Úsalas "
         "cuando haga falta actuar; no solo describas, hazlo. Recuerdas el contexto "
-        "de la conversación."
+        "de la conversación. Formato: usa caracteres Unicode directos para símbolos "
+        "(→ ← ≤ ≥ × ÷ … α β) y markdown normal; NO uses notación LaTeX ni envuelvas "
+        "nada en $...$ (el dashboard no renderiza LaTeX y se vería crudo, p. ej. "
+        "'$\\rightarrow$' en vez de '→')."
     ),
 }]
 
