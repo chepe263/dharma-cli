@@ -5,10 +5,16 @@ dentro habla con **cualquier endpoint compatible con OpenAI** (Ollama Cloud, un
 Ollama local, OpenAI, LM Studio…). Objetivo: correr Kiro Crew con tu propio
 modelo, sin el servicio de Amazon y sin lock-in.
 
-> **El nombre.** En honor a Dharma & Greg: la esencia de Dharma es ayudar a los
-> demás, y este shim hace justo eso — ayuda, en silencio, a que Kiro Crew corra
-> con el modelo que tú elijas, poniéndose en el lugar del kiro-cli real sin que
-> nada aguas abajo note la diferencia.
+> **El nombre.** De la serie *Dharma & Greg*: Dharma es el espíritu libre, sin
+> ataduras; Greg es el abogado formal y estructurado, atado a las reglas de su
+> mundo. Opuestos que conviven porque se entienden. Aquí:
+> **Greg es el `kiro-cli` real** — el oficial, atado al sistema (Amazon, login,
+> créditos). **Dharma es este faux** — llega de fuera, sin esas ataduras (sin
+> Amazon, sin lock-in), pero habla el mismo idioma que Greg y ocupa su lugar sin
+> fricción. Y como la Dharma de la serie, su papel es **conectar** dos mundos que
+> de otro modo no encajarían: une Kiro Crew (el mundo de Greg) con cualquier
+> modelo que tú traigas, y los hace convivir. `dharma-cli` es la Dharma de tu
+> kiro-cli: te libera del lock-in sin romper nada aguas abajo.
 
 > Estado: **funciona de punta a punta.** Chat de texto, comandos de arranque sin
 > Amazon, function calling / herramientas (crear, leer, editar, ejecutar), todo

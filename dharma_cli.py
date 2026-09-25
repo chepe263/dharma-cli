@@ -2,9 +2,11 @@
 """dharma-cli — a stand-in for kiro-cli that speaks ACP but talks to any
 OpenAI-compatible endpoint (Ollama Cloud, a local Ollama, OpenAI, LM Studio, …).
 
-Named in honor of Dharma & Greg: Dharma's whole nature is helping others, and
-this shim helps — it lets Kiro Crew run on a model of your own, quietly standing
-in for the real kiro-cli so nothing downstream notices the difference.
+Named for *Dharma & Greg*: Greg is the real kiro-cli — formal, official, bound to
+its system (Amazon, login, credits). Dharma is this faux — a free spirit from
+outside those bounds (no Amazon, no lock-in) that speaks Greg's language and takes
+his place without friction. Like the show's Dharma, its role is to CONNECT two
+worlds that wouldn't otherwise fit: it joins Kiro Crew to whatever model you bring.
 
 Kiro Crew launches this exactly as it launches the real `kiro-cli acp`. It never
 notices the difference: it sends ACP JSON-RPC frames over stdio and gets streamed
