@@ -92,27 +92,39 @@ def main() -> int:
         results.append("✅ session/set_mode: enviado")
 
         send({"jsonrpc": "2.0", "id": 4, "method": "session/prompt", "params": {
-            "sessionId": sid, "prompt": [{"type": "text", "text": "hola mundo"}],
+            "sessionId": sid, "prompt": [{"type": "text", "text": "corre un comando"}],
         }})
         streamed = []
+        saw_tool_call = False
+        saw_tool_update = False
         while True:
             msg = read()
             if msg.get("method") == "session/update":
                 upd = msg.get("params", {}).get("update", {})
-                if upd.get("sessionUpdate") == "agent_message_chunk":
+                su = upd.get("sessionUpdate")
+                if su == "agent_message_chunk":
                     streamed.append(upd.get("content", {}).get("text", ""))
+                elif su == "tool_call":
+                    saw_tool_call = True
+                elif su == "tool_call_update":
+                    saw_tool_update = True
             elif msg.get("id") == 4 and "method" not in msg:
                 stop = msg.get("result", {}).get("stopReason", "")
                 if stop not in ("end_turn", ""):
                     raise Fail(f"session/prompt: stopReason {stop!r}")
                 break
         text = "".join(streamed).strip()
-        if not text:
-            raise Fail("session/prompt: no llegó texto en streaming")
+        if not saw_tool_call:
+            raise Fail("no se emitió ningún tool_call")
+        if not saw_tool_update:
+            raise Fail("no se emitió tool_call_update (cierre de la herramienta)")
         if "ERROR" in text:
-            raise Fail(f"session/prompt: el backend reportó error → {text!r}")
-        results.append("✅ session/prompt: texto en streaming + stopReason=end_turn")
-        results.append(f"   respuesta (vía HTTP+SSE al stub): {text!r}")
+            raise Fail(f"el backend reportó error → {text!r}")
+        if "hola-desde-tool" not in text:
+            raise Fail(f"el texto final no refleja el resultado de la herramienta → {text!r}")
+        results.append("✅ session/prompt: tool_call + tool_call_update + texto final")
+        results.append("✅ function calling: el modelo pidió una herramienta, el faux la ejecutó y realimentó el resultado")
+        results.append(f"   respuesta final: {text!r}")
 
     except Fail as e:
         for r in results:

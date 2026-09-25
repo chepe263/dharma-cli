@@ -137,49 +137,148 @@ def _log(msg: str) -> None:
     sys.stderr.flush()
 
 
-# ── the model call (OpenAI-compatible, streaming) ──────────────────────────────
+# ── herramientas propias del faux (function calling) ───────────────────────────
+# En el dialecto kiro-cli el BACKEND ejecuta las herramientas; KiroCrew no las
+# corre. Así que el faux ofrece SUS PROPIAS tools al modelo OpenAI vía el campo
+# `tools`, las ejecuta él mismo cuando el modelo las pide, anuncia cada uso a
+# KiroCrew como un `tool_call`/`tool_call_update`, y realimenta el resultado al
+# modelo hasta que produce la respuesta final de texto.
 
-def _stream_model_reply(prompt_text: str, on_chunk) -> None:
-    """POST to <BASE_URL>/chat/completions with stream=true; call on_chunk(text)
-    for each delta. Falls back to a clear error string if the endpoint fails."""
+TOOLS_SPEC = [
+    {
+        "type": "function",
+        "function": {
+            "name": "ejecutar_bash",
+            "description": "Ejecuta un comando de shell en el contenedor y devuelve su salida.",
+            "parameters": {
+                "type": "object",
+                "properties": {"comando": {"type": "string", "description": "El comando a ejecutar"}},
+                "required": ["comando"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "leer_archivo",
+            "description": "Lee el contenido de un archivo de texto y lo devuelve.",
+            "parameters": {
+                "type": "object",
+                "properties": {"ruta": {"type": "string", "description": "Ruta absoluta del archivo"}},
+                "required": ["ruta"],
+            },
+        },
+    },
+]
+
+
+def _run_tool(name: str, args: dict) -> str:
+    """Execute a faux tool locally. Returns the result string the model sees."""
+    import subprocess
+    try:
+        if name == "ejecutar_bash":
+            cmd = args.get("comando", "")
+            out = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=30)
+            return (out.stdout + out.stderr)[:4000] or "(sin salida)"
+        if name == "leer_archivo":
+            with open(args.get("ruta", ""), "r", encoding="utf-8", errors="replace") as fh:
+                return fh.read()[:4000]
+        return f"(herramienta desconocida: {name})"
+    except Exception as e:  # noqa: BLE001
+        return f"(error ejecutando {name}: {type(e).__name__}: {e})"
+
+
+# ── llamada al modelo OpenAI-compatible (no streaming, para el bucle de tools) ──
+
+def _chat_once(messages: list) -> dict:
+    """One non-streaming /chat/completions call with tools. Returns the message
+    object of choices[0] (may carry content and/or tool_calls), or raises."""
     url = f"{BASE_URL}/chat/completions"
     body = json.dumps({
         "model": MODEL,
-        "messages": [{"role": "user", "content": prompt_text}],
-        "stream": True,
+        "messages": messages,
+        "tools": TOOLS_SPEC,
+        "stream": False,
     }).encode("utf-8")
     headers = {"Content-Type": "application/json"}
     if API_KEY:
         headers["Authorization"] = f"Bearer {API_KEY}"
-
     req = urllib.request.Request(url, data=body, headers=headers, method="POST")
+    with urllib.request.urlopen(req, timeout=120) as resp:
+        data = json.loads(resp.read().decode("utf-8"))
+    return (data.get("choices") or [{}])[0].get("message") or {}
+
+
+# ── el bucle de function calling: prompt -> tools -> texto final ───────────────
+
+def _run_turn(prompt_text: str, session_id: str, msg_id) -> None:
+    """Drive one ACP turn with tool support. Emits agent_message_chunk /
+    tool_call / tool_call_update, then closes the prompt request with stopReason."""
+    messages = [{"role": "user", "content": prompt_text}]
+    max_rounds = 6  # cota de seguridad contra bucles de herramientas
+
+    def emit_text(text: str) -> None:
+        _send({"jsonrpc": "2.0", "method": "session/update", "params": {
+            "sessionId": session_id,
+            "update": {"sessionUpdate": "agent_message_chunk",
+                       "content": {"type": "text", "text": text}},
+        }})
+
     try:
-        with urllib.request.urlopen(req, timeout=120) as resp:
-            for raw in resp:
-                line = raw.decode("utf-8").strip()
-                if not line or not line.startswith("data:"):
-                    continue
-                data = line[len("data:"):].strip()
-                if data == "[DONE]":
-                    break
+        for _round in range(max_rounds):
+            reply = _chat_once(messages)
+            tool_calls = reply.get("tool_calls") or []
+
+            if not tool_calls:
+                # respuesta final de texto
+                emit_text(reply.get("content") or "")
+                _send({"jsonrpc": "2.0", "id": msg_id, "result": {"stopReason": "end_turn"}})
+                return
+
+            # el modelo pidió herramientas: anúncialas, ejecútalas, realimenta
+            messages.append(reply)  # el turno del asistente con los tool_calls
+            for tc in tool_calls:
+                fn = tc.get("function") or {}
+                name = fn.get("name", "")
                 try:
-                    chunk = json.loads(data)
+                    args = json.loads(fn.get("arguments") or "{}")
                 except json.JSONDecodeError:
-                    continue
-                choices = chunk.get("choices") or []
-                if not choices:
-                    continue
-                delta = choices[0].get("delta") or {}
-                piece = delta.get("content")
-                if piece:
-                    on_chunk(piece)
+                    args = {}
+                call_id = tc.get("id") or f"faux-tool-{name}"
+
+                # 1. anunciar a KiroCrew que se usa una herramienta (visible en la UI)
+                _send({"jsonrpc": "2.0", "method": "session/update", "params": {
+                    "sessionId": session_id,
+                    "update": {"sessionUpdate": "tool_call", "toolCallId": call_id,
+                               "title": f"{name} {args}", "kind": "execute",
+                               "status": "pending", "rawInput": args},
+                }})
+                # 2. ejecutar la herramienta (el backend ejecuta, no KiroCrew)
+                result = _run_tool(name, args)
+                # 3. cerrar el tool_call en la UI
+                _send({"jsonrpc": "2.0", "method": "session/update", "params": {
+                    "sessionId": session_id,
+                    "update": {"sessionUpdate": "tool_call_update", "toolCallId": call_id,
+                               "status": "completed",
+                               "content": [{"type": "text", "text": result[:500]}]},
+                }})
+                # 4. realimentar el resultado al modelo
+                messages.append({"role": "tool", "tool_call_id": tc.get("id"),
+                                 "name": name, "content": result})
+
+        # se agotó el presupuesto de rondas
+        emit_text("[faux-backend] límite de rondas de herramientas alcanzado.")
+        _send({"jsonrpc": "2.0", "id": msg_id, "result": {"stopReason": "end_turn"}})
+
     except urllib.error.HTTPError as e:
         detail = e.read().decode("utf-8", "replace")[:300]
-        on_chunk(f"[faux-backend ERROR {e.code}] {detail}")
-        _log(f"HTTP {e.code} from {url}: {detail}")
-    except Exception as e:  # noqa: BLE001 — surface any transport failure to the user
-        on_chunk(f"[faux-backend ERROR] {type(e).__name__}: {e}")
-        _log(f"error calling {url}: {e}")
+        emit_text(f"[faux-backend ERROR {e.code}] {detail}")
+        _send({"jsonrpc": "2.0", "id": msg_id, "result": {"stopReason": "end_turn"}})
+        _log(f"HTTP {e.code}: {detail}")
+    except Exception as e:  # noqa: BLE001
+        emit_text(f"[faux-backend ERROR] {type(e).__name__}: {e}")
+        _send({"jsonrpc": "2.0", "id": msg_id, "result": {"stopReason": "end_turn"}})
+        _log(f"error en el turno: {e}")
 
 
 def _extract_prompt_text(params: dict) -> str:
@@ -236,18 +335,9 @@ def main() -> int:
             params = msg.get("params") or {}
             sid = params.get("sessionId", session_id)
             prompt_text = _extract_prompt_text(params)
-
-            def on_chunk(piece: str, _sid=sid) -> None:
-                _send({"jsonrpc": "2.0", "method": "session/update", "params": {
-                    "sessionId": _sid,
-                    "update": {
-                        "sessionUpdate": "agent_message_chunk",
-                        "content": {"type": "text", "text": piece},
-                    },
-                }})
-
-            _stream_model_reply(prompt_text, on_chunk)
-            _send({"jsonrpc": "2.0", "id": msg_id, "result": {"stopReason": "end_turn"}})
+            # _run_turn drives the full function-calling loop and closes the
+            # prompt request itself (with stopReason).
+            _run_turn(prompt_text, sid, msg_id)
 
         elif method == "session/cancel":
             pass  # notification, nothing to answer
