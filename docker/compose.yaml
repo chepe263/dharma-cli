@@ -8,10 +8,12 @@
 
 services:
   kirocrew:
+    # Por defecto usa la imagen PUBLICADA en GHCR (docker pull, sin compilar).
+    # Para construir localmente en su lugar: docker compose build
+    image: "${DHARMA_IMAGE:-ghcr.io/chepe263/dharma-kirocrew:latest}"
     build:
       context: ..
       dockerfile: docker/Dockerfile
-    image: dharma-kirocrew:dev   # imagen local horneada (Node/.NET/PHP/build)
     container_name: kirocrew-dharma
     restart: unless-stopped
     ports:

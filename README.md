@@ -54,6 +54,25 @@ Para arrancar al boot (opcional):
 
 Todo el estado (chats, config, memoria) vive en el volumen Docker
 `dharma-kirocrew-home` y sobrevive a reinicios y recreaciones del contenedor.
+
+### La imagen del contenedor
+
+El `compose.yaml` usa por defecto la imagen **publicada** en GHCR
+(`ghcr.io/chepe263/dharma-kirocrew:latest`) — trae Node, .NET y PHP horneados,
+así que en la máquina nueva es `docker pull` (segundos), no compilar. Esa imagen
+la construye y publica GitHub Actions (`.github/workflows/publicar-imagen.yml`)
+en cada cambio del `docker/Dockerfile`, con botón manual, y semanalmente para
+rehornear sobre el KiroCrew oficial más reciente.
+
+- **Construir localmente** en vez de bajar la publicada: `cd docker && docker compose build`
+- **Usar otra imagen**: exporta `DHARMA_IMAGE=...` antes de `docker compose up`.
+
+> **Paso manual una sola vez (dueño del repo):** tras la PRIMERA corrida del
+> workflow, el paquete en GHCR nace **privado**. Para poder `docker pull` sin
+> `docker login`, hazlo público en GitHub → tu perfil → Packages →
+> `dharma-kirocrew` → Package settings → Change visibility → Public.
+> Mientras siga privado, cada máquina debe `docker login ghcr.io` primero, o
+> construir la imagen localmente con `docker compose build`.
 No hay venvs ni rutas del sistema que alinear: el contenedor encapsula todo.
 
 ## Configuración
