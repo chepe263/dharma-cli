@@ -169,12 +169,28 @@ TOOLS_SPEC = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "escribir_archivo",
+            "description": "Escribe (crea o sobrescribe) un archivo de texto con el contenido dado. Úsala para crear archivos como index.html.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "ruta": {"type": "string", "description": "Ruta del archivo a escribir (absoluta o relativa al home)"},
+                    "contenido": {"type": "string", "description": "El contenido completo del archivo"},
+                },
+                "required": ["ruta", "contenido"],
+            },
+        },
+    },
 ]
 
 
 def _run_tool(name: str, args: dict) -> str:
     """Execute a faux tool locally. Returns the result string the model sees."""
     import subprocess
+    import os as _os
     try:
         if name == "ejecutar_bash":
             cmd = args.get("comando", "")
@@ -183,6 +199,16 @@ def _run_tool(name: str, args: dict) -> str:
         if name == "leer_archivo":
             with open(args.get("ruta", ""), "r", encoding="utf-8", errors="replace") as fh:
                 return fh.read()[:4000]
+        if name == "escribir_archivo":
+            ruta = args.get("ruta", "")
+            contenido = args.get("contenido", "")
+            # ruta relativa -> respecto al home del proceso (el del contenedor)
+            if not _os.path.isabs(ruta):
+                ruta = _os.path.join(_os.path.expanduser("~"), ruta)
+            _os.makedirs(_os.path.dirname(ruta) or ".", exist_ok=True)
+            with open(ruta, "w", encoding="utf-8") as fh:
+                fh.write(contenido)
+            return f"escrito {len(contenido)} bytes en {ruta}"
         return f"(herramienta desconocida: {name})"
     except Exception as e:  # noqa: BLE001
         return f"(error ejecutando {name}: {type(e).__name__}: {e})"
