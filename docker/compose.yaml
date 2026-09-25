@@ -1,0 +1,28 @@
+# Experimento: KiroCrew oficial usando NUESTRO faux backend en vez de kiro-cli.
+#
+#   cd docker && docker compose up      (ver logs de arranque en vivo)
+#
+# Estrategia reverse-engineering: levantar, ver dónde falla, parchar el faux.
+
+services:
+  kirocrew:
+    image: ghcr.io/kirodotdev/kirocrew:stable
+    container_name: kirocrew-faux
+    ports:
+      # Expuesto en todas las interfaces para poder abrirlo desde otra máquina
+      # (tu Chrome fuera de esta VM). Experimento local desechable.
+      - "5477:5476"
+    volumes:
+      # Monta el repo del faux dentro del contenedor (solo lectura).
+      - ../:/opt/faux-kiro-acp:ro
+    environment:
+      # EL DESVÍO: KiroCrew resolverá este binario en vez de kiro-cli.
+      KIROCREW_KIRO_BIN: /opt/faux-kiro-acp/faux-kiro-cli.sh
+      KIROCREW_BIND: 0.0.0.0
+      # KiroCrew rechaza requests cuyo Host/Origin no esté permitido; declara
+      # desde dónde abres el navegador. Ajusta la IP a la de tu host.
+      KIROCREW_CORS_ORIGINS: "http://192.168.2.174:5477,http://localhost:5477,http://127.0.0.1:5477"
+      # El contenedor bloquea user-namespaces (unshare EPERM). Para este
+      # experimento desechable aceptamos el contenedor como única frontera.
+      KIROCREW_ALLOW_UNSANDBOXED: "1"
+    # tini/entrypoint de la imagen se mantienen.

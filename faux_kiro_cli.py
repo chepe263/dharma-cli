@@ -250,7 +250,14 @@ def main() -> int:
             _send({"jsonrpc": "2.0", "id": msg_id, "result": {"stopReason": "end_turn"}})
 
         elif method == "session/cancel":
-            pass
+            pass  # notification, nothing to answer
+
+        elif method in ("_kiro.dev/session/terminate", "session/close"):
+            # KiroCrew tears a session down with this. If we don't answer the
+            # REQUEST, its teardown waits 5s and times out every close. Answer
+            # empty so the session ends promptly.
+            if msg_id is not None:
+                _send({"jsonrpc": "2.0", "id": msg_id, "result": {}})
 
     return 0
 
