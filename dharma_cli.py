@@ -70,6 +70,39 @@ MODEL = _cfg("DHARMA_MODEL", "FAUX_MODEL", "gpt-oss:20b")
 # blocks. So the faux must answer them itself — this is what removes the Amazon
 # SSO requirement. Shapes captured verbatim from `kiro-cli 2.24.0` on the host.
 
+
+def _list_models_catalog() -> dict:
+    """Ask the OpenAI-compatible endpoint for its real model list (GET /v1/models)
+    and map it to the shape KiroCrew parses. Falls back to the configured model."""
+    def _fallback() -> dict:
+        return {"models": [
+            {"model_name": "auto", "description": "dharma default", "model_id": "auto",
+             "context_window_tokens": 128000, "rate_multiplier": 0.0, "rate_unit": "Free"},
+            {"model_name": MODEL, "description": f"dharma model ({MODEL})", "model_id": MODEL,
+             "context_window_tokens": 128000, "rate_multiplier": 0.0, "rate_unit": "Free"},
+        ], "default_model": "auto"}
+
+    try:
+        req = urllib.request.Request(f"{BASE_URL}/models", method="GET")
+        if API_KEY:
+            req.add_header("Authorization", f"Bearer {API_KEY}")
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        ids = [m.get("id") for m in (data.get("data") or []) if m.get("id")]
+        if not ids:
+            return _fallback()
+        # "auto" primero (default), luego cada modelo real del endpoint
+        models = [{"model_name": "auto", "description": "dharma default", "model_id": "auto",
+                   "context_window_tokens": 128000, "rate_multiplier": 0.0, "rate_unit": "Free"}]
+        for mid in ids:
+            models.append({"model_name": mid, "description": f"dharma: {mid}", "model_id": mid,
+                           "context_window_tokens": 128000, "rate_multiplier": 0.0, "rate_unit": "Free"})
+        return {"models": models, "default_model": "auto"}
+    except Exception as e:  # noqa: BLE001
+        _log(f"list-models: /models falló ({type(e).__name__}: {e}); usando fallback")
+        return _fallback()
+
+
 def _handle_one_shot() -> bool:
     """If argv is a known one-shot command, print the faux answer and return
     True (caller should exit 0). Otherwise return False (fall through to ACP)."""
@@ -105,20 +138,11 @@ def _handle_one_shot() -> bool:
         return True
 
     # `kiro-cli chat --list-models --format json`  -> model catalog.
-    # We advertise the single configured model (plus "auto" as default) in the
-    # exact shape KiroCrew parses (models[].model_name/model_id, default_model).
+    # Dharma pregunta al endpoint OpenAI-compatible su lista REAL de modelos
+    # (GET /v1/models) y la traduce al formato que KiroCrew parsea. Si la consulta
+    # falla, cae al modelo configurado (para no dejar el selector vacío).
     if argv[0] == "chat" and "--list-models" in argv:
-        catalog = {
-            "models": [
-                {"model_name": "auto", "description": "dharma default", "model_id": "auto",
-                 "context_window_tokens": 128000, "rate_multiplier": 0.0, "rate_unit": "Free"},
-                {"model_name": MODEL, "description": f"dharma backend model ({MODEL})",
-                 "model_id": MODEL, "context_window_tokens": 128000,
-                 "rate_multiplier": 0.0, "rate_unit": "Free"},
-            ],
-            "default_model": "auto",
-        }
-        print(json.dumps(catalog))
+        print(json.dumps(_list_models_catalog()))
         return True
 
     # `kiro-cli login ...` — nothing to do; a faux backend needs no SSO.
