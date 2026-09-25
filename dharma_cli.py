@@ -174,6 +174,14 @@ ACTIVE_MODEL = _model_from_argv() or MODEL
 # E2: require tool approval unless explicitly disabled (DHARMA_APPROVAL=0).
 APPROVAL = os.environ.get("DHARMA_APPROVAL", "1") not in ("0", "false", "no", "")
 
+# Máximo de rondas de herramientas por turno (cada ronda = 1 llamada al modelo
+# que puede pedir varias tools). Freno anti-bucle; 6 era muy poco para tareas de
+# agente reales. Configurable vía .env.
+try:
+    MAX_ROUNDS = max(1, int(os.environ.get("DHARMA_MAX_ROUNDS", "25")))
+except ValueError:
+    MAX_ROUNDS = 25
+
 # E2: tools that MUTATE or execute need approval; pure reads run without asking.
 SENSITIVE_TOOLS = {"execute_bash", "fs_write", "fs_append", "str_replace", "delete_file"}
 
@@ -514,7 +522,7 @@ def _run_turn(prompt_text: str, session_id: str, msg_id) -> None:
     # toda la sesión; antes se reiniciaba cada turno y era amnésico.
     SESSION_MESSAGES.append({"role": "user", "content": prompt_text})
     messages = SESSION_MESSAGES  # alias: trabajamos sobre el historial vivo
-    max_rounds = 6
+    max_rounds = MAX_ROUNDS
 
     def emit_text(text: str) -> None:
         if not text:
@@ -577,8 +585,10 @@ def _run_turn(prompt_text: str, session_id: str, msg_id) -> None:
                 messages.append({"role": "tool", "tool_call_id": tc.get("id"),
                                  "name": name, "content": result})
 
-        emit_text("[dharma] límite de rondas de herramientas alcanzado.")
-        _send({"jsonrpc": "2.0", "id": msg_id, "result": {"stopReason": "end_turn"}})
+        emit_text(f"\n[dharma] Alcancé el límite de {MAX_ROUNDS} rondas de herramientas "
+                  f"en este turno. Si la tarea necesita más pasos, súbelo con "
+                  f"DHARMA_MAX_ROUNDS en el .env, o pídeme que continúe.")
+        _send({"jsonrpc": "2.0", "id": msg_id, "result": {"stopReason": "max_turn_requests"}})
 
     except urllib.error.HTTPError as e:
         detail = e.read().decode("utf-8", "replace")[:300]
