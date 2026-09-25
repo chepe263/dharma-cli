@@ -54,6 +54,32 @@ Apuntándola a un envoltorio que ejecute este script, Kiro Crew lo lanzará en s
 lugar. (El flujo de instalación completo — que Kiro Crew no exija el login de
 Amazon — es parte del *Roadmap*.)
 
+## Probarlo con Kiro Crew de verdad (Docker)
+
+El experimento vive en `docker/`. Corre la imagen oficial `kirocrew:stable` con
+este faux montado y `KIROCREW_KIRO_BIN` apuntándolo, así Kiro Crew lo lanza en
+lugar de kiro-cli.
+
+```bash
+cd docker && docker compose up -d      # levanta el gateway con el faux
+cd .. && ./login.sh                     # mintea token e imprime el link listo
+```
+
+`login.sh` detecta el puerto publicado y la IP del host y te imprime el enlace ya
+armado (variante `localhost` y variante IP-LAN), para no cambiar a mano el host y
+el puerto del link que imprime `kirocrew token`.
+
+Notas del experimento (descubiertas montando y viendo dónde falla):
+- El contenedor bloquea user-namespaces, así que se usa `KIROCREW_ALLOW_UNSANDBOXED=1`
+  (el contenedor es la única frontera — aceptable para pruebas).
+- El puerto por defecto es `5477` (el `5476` suele estar ocupado por un Kiro Crew real).
+- Para abrir desde otra máquina, la IP:puerto debe estar en `KIROCREW_CORS_ORIGINS`.
+
+Estado verificado en vivo: el gateway arranca `healthy`, el dashboard carga por
+web, y un turno de chat de **texto** responde contra el modelo configurado, sin
+Amazon. El **function calling** (multi-turno con herramientas) es el siguiente
+paso — ver *Roadmap*.
+
 ## Archivos
 
 - `faux_kiro_cli.py` — el faux backend (ACP ↔ OpenAI-compatible). Sin dependencias.
