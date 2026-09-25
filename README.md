@@ -115,5 +115,5 @@ paso — ver *Roadmap*.
 ## Créditos
 
 Basado en la lectura del código abierto de Kiro Crew
-(`github.com/kirodotdev/KiroCrew`, contrato ACP en
+(`github.com/kirodotdev/KiroCrew`, commit de referencia y archivos fuente en `PROVENANCE.md`; contrato ACP en
 `docs/system-specs/modules/acp-client.md`).
