@@ -441,6 +441,21 @@ def _chat_stream(messages: list, on_text) -> dict:
     return msg
 
 
+def _tool_kind(name: str) -> str:
+    """ACP toolCall 'kind' que concuerda con la herramienta. Debe ser coherente
+    entre el session/update tool_call y la petición de permiso, o KiroCrew no
+    renderiza la tarjeta (fs_write se quedaba bloqueado sin pedir permiso)."""
+    if name in ("fs_write", "fs_append", "str_replace"):
+        return "edit"
+    if name == "delete_file":
+        return "delete"
+    if name in ("fs_read", "list_directory", "file_search", "grep_search"):
+        return "read"
+    if name in ("web_fetch", "web_search"):
+        return "fetch"
+    return "execute"
+
+
 def _request_permission(session_id, call_id, name, args) -> bool:
     """E2: ask KiroCrew to approve a sensitive tool. Returns True if approved."""
     global _PERM_ID
@@ -448,7 +463,7 @@ def _request_permission(session_id, call_id, name, args) -> bool:
     rid = _PERM_ID
     _send({"jsonrpc": "2.0", "id": rid, "method": "session/request_permission", "params": {
         "sessionId": session_id,
-        "toolCall": {"toolCallId": call_id, "title": f"{name} {args}", "kind": "execute"},
+        "toolCall": {"toolCallId": call_id, "title": f"{name} {args}", "kind": _tool_kind(name)},
         "options": [
             {"optionId": "allow_once", "name": "Allow once", "kind": "allow_once"},
             {"optionId": "reject_once", "name": "Reject", "kind": "reject_once"},
@@ -521,7 +536,7 @@ def _run_turn(prompt_text: str, session_id: str, msg_id) -> None:
                 _send({"jsonrpc": "2.0", "method": "session/update", "params": {
                     "sessionId": session_id,
                     "update": {"sessionUpdate": "tool_call", "toolCallId": call_id,
-                               "title": f"{name} {args}", "kind": "execute",
+                               "title": f"{name} {args}", "kind": _tool_kind(name),
                                "status": "pending", "rawInput": args},
                 }})
 

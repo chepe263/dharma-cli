@@ -23,6 +23,7 @@ services:
       # EL DESVÍO: KiroCrew resolverá este binario en vez de kiro-cli.
       KIROCREW_KIRO_BIN: /opt/dharma-cli/dharma-cli.sh
       KIROCREW_BIND: 0.0.0.0
+      KIROCREW_TELEMETRY_DISABLED: 1
       # KiroCrew rechaza requests cuyo Host/Origin no esté permitido; declara
       # desde dónde abres el navegador. Ajusta la IP a la de tu host.
       KIROCREW_CORS_ORIGINS: "http://192.168.2.174:5477,http://localhost:5477,http://127.0.0.1:5477"
