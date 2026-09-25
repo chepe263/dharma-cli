@@ -214,7 +214,9 @@ SESSION_MESSAGES = [{
         "de la conversación. Formato: usa caracteres Unicode directos para símbolos "
         "(→ ← ≤ ≥ × ÷ … α β) y markdown normal; NO uses notación LaTeX ni envuelvas "
         "nada en $...$ (el dashboard no renderiza LaTeX y se vería crudo, p. ej. "
-        "'$\\rightarrow$' en vez de '→')."
+        "'$\\rightarrow$' en vez de '→'). Idioma: responde SIEMPRE en el mismo idioma "
+        "del último mensaje del usuario, cambiando sobre la marcha si el usuario "
+        "cambia de idioma (español -> español, inglés -> inglés)."
     ),
 }]
 
