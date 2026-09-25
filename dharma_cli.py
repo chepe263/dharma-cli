@@ -13,11 +13,11 @@ notices the difference: it sends ACP JSON-RPC frames over stdio and gets streame
 text back. Inside, this process forwards each turn to `<BASE_URL>/chat/completions`
 and streams the reply back as ACP `agent_message_chunk` notifications.
 
-CONFIG (via .env in the working dir, or real environment variables). New DHARMA_*
-names are preferred; the older FAUX_* names still work for back-compat:
-  DHARMA_BASE_URL / FAUX_BASE_URL   OpenAI-compatible base, e.g. https://ollama.com/v1
-  DHARMA_API_KEY  / FAUX_API_KEY    Bearer token (Ollama Cloud: your ollama.com API key)
-  DHARMA_MODEL    / FAUX_MODEL       model id, e.g. gpt-oss:20b  or  gemma4:cloud
+CONFIG (via .env in the working dir, or real environment variables):
+  DHARMA_BASE_URL   OpenAI-compatible base, e.g. https://ollama.com/v1
+  DHARMA_API_KEY    Bearer token (Ollama Cloud: your ollama.com API key)
+  DHARMA_MODEL      model id, e.g. gpt-oss:20b  or  gemma4:cloud
+  DHARMA_APPROVAL   1 = ask before sensitive tools (default), 0 = run directly
 
 No third-party dependencies — stdlib only (urllib). Python 3.8+.
 
@@ -53,15 +53,9 @@ def _load_dotenv(path: str = ".env") -> None:
 
 _load_dotenv()
 
-
-def _cfg(new_key: str, old_key: str, default: str = "") -> str:
-    """Prefer the new DHARMA_* name; fall back to the legacy FAUX_* name."""
-    return os.environ.get(new_key) or os.environ.get(old_key) or default
-
-
-BASE_URL = _cfg("DHARMA_BASE_URL", "FAUX_BASE_URL", "https://ollama.com/v1").rstrip("/")
-API_KEY = _cfg("DHARMA_API_KEY", "FAUX_API_KEY", "")
-MODEL = _cfg("DHARMA_MODEL", "FAUX_MODEL", "gpt-oss:20b")
+BASE_URL = os.environ.get("DHARMA_BASE_URL", "https://ollama.com/v1").rstrip("/")
+API_KEY = os.environ.get("DHARMA_API_KEY", "")
+MODEL = os.environ.get("DHARMA_MODEL", "gpt-oss:20b")
 
 
 # ── one-shot commands (faux-ted from the real kiro-cli output) ─────────────────
@@ -178,7 +172,7 @@ def _model_from_argv() -> str:
 ACTIVE_MODEL = _model_from_argv() or MODEL
 
 # E2: require tool approval unless explicitly disabled (DHARMA_APPROVAL=0).
-APPROVAL = _cfg("DHARMA_APPROVAL", "FAUX_APPROVAL", "1") not in ("0", "false", "no", "")
+APPROVAL = os.environ.get("DHARMA_APPROVAL", "1") not in ("0", "false", "no", "")
 
 # E2: tools that MUTATE or execute need approval; pure reads run without asking.
 SENSITIVE_TOOLS = {"execute_bash", "fs_write", "fs_append", "str_replace", "delete_file"}

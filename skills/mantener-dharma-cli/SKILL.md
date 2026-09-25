@@ -54,7 +54,7 @@ este repo — trae el commit de KiroCrew de referencia exacto.
   resultado hasta el texto final.
 - Usar NOMBRES CANÓNICOS de herramientas (`execute_bash`, `fs_read`, `fs_write`…,
   de `config/defaults.json` y kiro.dev/docs/tools), no inventados.
-- Config: `DHARMA_*` con fallback a `FAUX_*` (no romper .env viejos).
+- Config: variables `DHARMA_*`.
 - La aprobación es POR HERRAMIENTA, no por capacidad: bloquear `fs_write` pero
   permitir `execute_bash` deja al modelo escribir con `echo > archivo`. Aceptable
   para uso personal; documentado, no un bug.

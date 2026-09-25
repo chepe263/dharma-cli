@@ -40,9 +40,9 @@ Copia `.env.example` a `.env` y rellena:
 
 | Variable | Qué es | Ejemplo (Ollama Cloud) |
 |---|---|---|
-| `FAUX_BASE_URL` | endpoint OpenAI-compatible | `https://ollama.com/v1` |
-| `FAUX_API_KEY` | token Bearer | tu key de `https://ollama.com/settings/keys` |
-| `FAUX_MODEL` | id del modelo | `gpt-oss:20b` |
+| `DHARMA_BASE_URL` | endpoint OpenAI-compatible | `https://ollama.com/v1` |
+| `DHARMA_API_KEY` | token Bearer | tu key de `https://ollama.com/settings/keys` |
+| `DHARMA_MODEL` | id del modelo | `gpt-oss:20b` |
 
 Ollama Cloud tiene acceso API gratuito para pruebas. También sirve un Ollama local
 (`http://localhost:11434/v1`, la key se ignora) o el OpenAI oficial.

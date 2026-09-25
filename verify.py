@@ -37,9 +37,9 @@ def main() -> int:
 
     # 2. launch the faux backend pointed at the stub
     env = dict(os.environ)
-    env["FAUX_BASE_URL"] = f"http://127.0.0.1:{STUB_PORT}/v1"
-    env["FAUX_API_KEY"] = "stub-ignored"
-    env["FAUX_MODEL"] = "stub-model"
+    env["DHARMA_BASE_URL"] = f"http://127.0.0.1:{STUB_PORT}/v1"
+    env["DHARMA_API_KEY"] = "stub-ignored"
+    env["DHARMA_MODEL"] = "stub-model"
     proc = subprocess.Popen(
         [sys.executable, "dharma_cli.py", "--agent", AGENT],
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, bufsize=1,

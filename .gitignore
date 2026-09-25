@@ -10,3 +10,8 @@ venv/
 # scratch / inventarios de la herramienta reejecutable
 superficie.*.json
 *.log
+
+# estado de KiroCrew si se monta como bind mount (NUNCA subir: chats, credenciales)
+kirocrew-home/
+.kiro/
+data/
