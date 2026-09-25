@@ -8,7 +8,10 @@
 
 services:
   kirocrew:
-    image: ghcr.io/kirodotdev/kirocrew:stable
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: dharma-kirocrew:dev   # imagen local horneada (Node/.NET/PHP/build)
     container_name: kirocrew-dharma
     restart: unless-stopped
     ports:
@@ -30,5 +33,26 @@ services:
       # El contenedor es la frontera de aislamiento en este modo.
       KIROCREW_ALLOW_UNSANDBOXED: "1"
 
+  # ── MariaDB OPCIONAL ─────────────────────────────────────────────────────
+  # No arranca por defecto. Actívala con:  docker compose --profile db up -d
+  # KiroCrew la alcanza en el host 'mariadb' puerto 3306 (misma red del compose).
+  # Para una DB en OTRA máquina, no uses esto: apunta tu app a esa IP:puerto.
+  mariadb:
+    image: mariadb:11
+    container_name: dharma-mariadb
+    restart: unless-stopped
+    profiles: ["db"]
+    environment:
+      MARIADB_ROOT_PASSWORD: "${DB_ROOT_PASSWORD:-changeme}"
+      MARIADB_DATABASE: "${DB_NAME:-app}"
+      MARIADB_USER: "${DB_USER:-app}"
+      MARIADB_PASSWORD: "${DB_PASSWORD:-app}"
+    ports:
+      # Expuesto solo a localhost del host por seguridad (no a la red).
+      - "127.0.0.1:${DB_PORT:-3306}:3306"
+    volumes:
+      - dharma-mariadb-data:/var/lib/mysql
+
 volumes:
   dharma-kirocrew-home:
+  dharma-mariadb-data:
