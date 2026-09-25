@@ -563,7 +563,10 @@ def _run_turn(prompt_text: str, session_id: str, msg_id) -> None:
                 }})
 
                 # E2: pedir permiso para herramientas sensibles
-                if APPROVAL and name in SENSITIVE_TOOLS:
+                sensible = name in SENSITIVE_TOOLS
+                _log(f"tool: {name} | sensible={sensible} | approval={APPROVAL} "
+                     f"-> {'PIDE PERMISO' if (APPROVAL and sensible) else 'directo'}")
+                if APPROVAL and sensible:
                     if not _request_permission(session_id, call_id, name, args):
                         _send({"jsonrpc": "2.0", "method": "session/update", "params": {
                             "sessionId": session_id,
