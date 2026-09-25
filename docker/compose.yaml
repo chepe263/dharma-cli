@@ -14,10 +14,10 @@ services:
       - "5477:5476"
     volumes:
       # Monta el repo del faux dentro del contenedor (solo lectura).
-      - ../:/opt/faux-kiro-acp:ro
+      - ../:/opt/dharma-cli:ro
     environment:
       # EL DESVÍO: KiroCrew resolverá este binario en vez de kiro-cli.
-      KIROCREW_KIRO_BIN: /opt/faux-kiro-acp/dharma-cli.sh
+      KIROCREW_KIRO_BIN: /opt/dharma-cli/dharma-cli.sh
       KIROCREW_BIND: 0.0.0.0
       # KiroCrew rechaza requests cuyo Host/Origin no esté permitido; declara
       # desde dónde abres el navegador. Ajusta la IP a la de tu host.
