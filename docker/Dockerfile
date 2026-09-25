@@ -12,9 +12,11 @@ ARG DOTNET_CHANNEL=8.0
 # Todo el aprovisionamiento como root; al final se restaura el usuario kirocrew.
 USER root
 
-# ── Básicas de build + PHP + utilidades ──────────────────────────────────────
+# ── Básicas de build + PHP + utilidades + libicu (lo necesita .NET) ───────────
+# Sin libicu, `dotnet` aborta con SIGABRT (exit 134) en Debian slim.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential ca-certificates gnupg \
+        libicu-dev \
         php-cli php-mysql php-mbstring php-xml php-curl php-zip \
         default-mysql-client unzip \
     && rm -rf /var/lib/apt/lists/*
@@ -39,6 +41,12 @@ ENV DOTNET_ROOT=/usr/local/dotnet \
 # Volver al usuario sin privilegios con el que corre KiroCrew.
 USER kirocrew
 
-# Verificación en build: si algo no quedó, el build falla aquí (no en runtime).
-RUN node --version && npm --version && php --version \
-    && composer --version && dotnet --version && python3 --version
+# Verificación en build (etiquetada): si algo no quedó, el build falla aquí y el
+# echo previo dice EXACTAMENTE cuál herramienta fue.
+RUN echo "== node ==" && node --version \
+    && echo "== npm ==" && npm --version \
+    && echo "== php ==" && php --version \
+    && echo "== composer ==" && composer --version \
+    && echo "== dotnet ==" && dotnet --version \
+    && echo "== python3 ==" && python3 --version \
+    && echo "== todo OK =="
