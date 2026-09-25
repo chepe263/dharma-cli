@@ -187,6 +187,25 @@ SENSITIVE_TOOLS = {"execute_bash", "fs_write", "fs_append", "str_replace", "dele
 # E2: monotonic id for our server->client permission requests.
 _PERM_ID = 9000
 
+# Cancelación: session/cancel la enciende; _run_turn la revisa entre rondas.
+# Nota: corta entre rondas de herramientas, no a mitad de una generación HTTP en
+# curso (el bucle de stdin está ocupado durante la llamada al modelo).
+_CANCELLED = False
+
+# Memoria de conversación a nivel de sesión (persiste entre turnos). Arranca con
+# un system prompt que le da a Dharma su papel.
+SESSION_MESSAGES = [{
+    "role": "system",
+    "content": (
+        "Eres Dharma, un asistente que corre dentro de KiroCrew a través de un "
+        "backend propio. Ayudas con tareas de código y del sistema. Tienes "
+        "herramientas: execute_bash, fs_read, fs_write, fs_append, str_replace, "
+        "delete_file, list_directory, file_search, grep_search, web_fetch. Úsalas "
+        "cuando haga falta actuar; no solo describas, hazlo. Recuerdas el contexto "
+        "de la conversación."
+    ),
+}]
+
 
 def _send(obj: dict) -> None:
     sys.stdout.write(json.dumps(obj) + "\n")
@@ -248,7 +267,17 @@ TOOLS_SPEC = [
           {"url": {"type": "string", "description": "URL a descargar"}}, ["url"]),
     _tool("web_search", "Busca en la web información actual.",
           {"query": {"type": "string", "description": "Consulta de búsqueda"}}, ["query"]),
+    # ── session ──
+    _tool("todo_list", "Lleva una lista de tareas de la sesión para organizar el trabajo. "
+                       "action=add añade una tarea, complete la marca hecha (por texto o índice), "
+                       "list muestra la lista.",
+          {"action": {"type": "string", "enum": ["add", "complete", "list"]},
+           "item": {"type": "string", "description": "Texto de la tarea (para add/complete)"}},
+          ["action"]),
 ]
+
+# Lista de tareas de la sesión (para la herramienta todo_list).
+TODOS = []  # cada uno: {"text": str, "done": bool}
 
 
 def _run_tool(name: str, args: dict) -> str:
@@ -332,6 +361,22 @@ def _run_tool(name: str, args: dict) -> str:
             text = _re.sub(r"<[^>]+>", " ", text)
             text = _re.sub(r"\s+", " ", text).strip()
             return text[:4000] or "(sin contenido)"
+        if name == "todo_list":
+            action = args.get("action", "list")
+            item = args.get("item", "")
+            if action == "add" and item:
+                TODOS.append({"text": item, "done": False})
+            elif action == "complete" and item:
+                for t in TODOS:
+                    if item == t["text"] or (item.isdigit() and TODOS.index(t) == int(item) - 1):
+                        t["done"] = True
+                        break
+            if not TODOS:
+                return "(lista de tareas vacía)"
+            return "\n".join(
+                f"{i+1}. [{'x' if t['done'] else ' '}] {t['text']}"
+                for i, t in enumerate(TODOS)
+            )
         if name == "web_search":
             return "(web_search no implementada: requiere una API de búsqueda; usa web_fetch de una URL, o execute_bash con curl)"
         return f"(herramienta desconocida: {name})"
@@ -440,8 +485,13 @@ def _request_permission(session_id, call_id, name, args) -> bool:
 
 def _run_turn(prompt_text: str, session_id: str, msg_id) -> None:
     """Drive one ACP turn: streaming text (B1), tool calls with approval (E2),
-    on the selected model (E1). Closes the prompt request with stopReason."""
-    messages = [{"role": "user", "content": prompt_text}]
+    on the selected model (E1), with conversation memory across turns.
+    Closes the prompt request with stopReason."""
+    # Memoria de conversación: SESSION_MESSAGES persiste entre turnos, así Dharma
+    # recuerda lo anterior ("crea X" -> "ahora edítalo" funciona). El proceso vive
+    # toda la sesión; antes se reiniciaba cada turno y era amnésico.
+    SESSION_MESSAGES.append({"role": "user", "content": prompt_text})
+    messages = SESSION_MESSAGES  # alias: trabajamos sobre el historial vivo
     max_rounds = 6
 
     def emit_text(text: str) -> None:
@@ -455,6 +505,9 @@ def _run_turn(prompt_text: str, session_id: str, msg_id) -> None:
 
     try:
         for _round in range(max_rounds):
+            if _CANCELLED:
+                _send({"jsonrpc": "2.0", "id": msg_id, "result": {"stopReason": "cancelled"}})
+                return
             reply = _chat_stream(messages, emit_text)  # texto ya sale en vivo
             tool_calls = reply.get("tool_calls") or []
 
@@ -525,7 +578,7 @@ def _extract_prompt_text(params: dict) -> str:
 # ── main ACP loop ──────────────────────────────────────────────────────────────
 
 def main() -> int:
-    global ACTIVE_MODEL
+    global ACTIVE_MODEL, _CANCELLED
     # One-shot commands (--version / whoami / chat --list-models / login) are
     # answered and we exit — they must NOT fall into the ACP stdin loop.
     if _handle_one_shot():
@@ -581,12 +634,13 @@ def main() -> int:
             params = msg.get("params") or {}
             sid = params.get("sessionId", session_id)
             prompt_text = _extract_prompt_text(params)
+            _CANCELLED = False  # nuevo turno, limpiar cancelación previa
             # _run_turn drives the full function-calling loop and closes the
             # prompt request itself (with stopReason).
             _run_turn(prompt_text, sid, msg_id)
 
         elif method == "session/cancel":
-            pass  # notification, nothing to answer
+            _CANCELLED = True  # _run_turn lo revisa entre rondas
 
         elif method in ("_kiro.dev/session/terminate", "session/close"):
             # KiroCrew tears a session down with this. If we don't answer the
