@@ -182,6 +182,14 @@ try:
 except ValueError:
     MAX_ROUNDS = 25
 
+# Ventana deslizante del historial: máximo de mensajes NO-system a conservar.
+# Evita que la conversación crezca sin límite y que cada turno reenvíe todo el
+# historial al modelo (caro con API de pago). 0 = sin límite. Default 40.
+try:
+    MAX_HISTORY = max(0, int(os.environ.get("DHARMA_MAX_HISTORY", "40")))
+except ValueError:
+    MAX_HISTORY = 40
+
 # E2: tools that MUTATE or execute need approval; pure reads run without asking.
 SENSITIVE_TOOLS = {"execute_bash", "fs_write", "fs_append", "str_replace", "delete_file"}
 
@@ -516,6 +524,26 @@ def _request_permission(session_id, call_id, name, args) -> bool:
 
 # ── el bucle de function calling: prompt -> tools -> texto final ───────────────
 
+def _trim_history() -> None:
+    """Ventana deslizante: conserva los mensajes system + los últimos MAX_HISTORY
+    mensajes no-system, descartando los más viejos. Así el historial no crece sin
+    límite ni se reenvía entero cada turno (caro con API de pago). No deja huérfano
+    un mensaje 'tool' (necesita su 'assistant' con tool_calls justo antes), así que
+    si el corte cae sobre un 'tool', avanza hasta el siguiente 'assistant'/'user'.
+    """
+    if MAX_HISTORY <= 0:
+        return
+    systems = [m for m in SESSION_MESSAGES if m.get("role") == "system"]
+    rest = [m for m in SESSION_MESSAGES if m.get("role") != "system"]
+    if len(rest) <= MAX_HISTORY:
+        return
+    kept = rest[-MAX_HISTORY:]
+    # No arrancar la ventana con un 'tool' colgado (sin su assistant previo).
+    while kept and kept[0].get("role") == "tool":
+        kept.pop(0)
+    SESSION_MESSAGES[:] = systems + kept
+
+
 def _run_turn(prompt_text: str, session_id: str, msg_id) -> None:
     """Drive one ACP turn: streaming text (B1), tool calls with approval (E2),
     on the selected model (E1), with conversation memory across turns.
@@ -524,6 +552,7 @@ def _run_turn(prompt_text: str, session_id: str, msg_id) -> None:
     # recuerda lo anterior ("crea X" -> "ahora edítalo" funciona). El proceso vive
     # toda la sesión; antes se reiniciaba cada turno y era amnésico.
     SESSION_MESSAGES.append({"role": "user", "content": prompt_text})
+    _trim_history()  # ventana deslizante: no crecer sin límite
     messages = SESSION_MESSAGES  # alias: trabajamos sobre el historial vivo
     max_rounds = MAX_ROUNDS
 
@@ -545,6 +574,11 @@ def _run_turn(prompt_text: str, session_id: str, msg_id) -> None:
             tool_calls = reply.get("tool_calls") or []
 
             if not tool_calls:
+                # Guardar la respuesta final del asistente en el historial (si no,
+                # Dharma no recuerda lo que él mismo respondió) y recortar.
+                if reply.get("content"):
+                    SESSION_MESSAGES.append(reply)
+                _trim_history()
                 _send({"jsonrpc": "2.0", "id": msg_id, "result": {"stopReason": "end_turn"}})
                 return
 
