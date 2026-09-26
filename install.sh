@@ -65,6 +65,13 @@ else
 fi
 
 # ── 4. Arrancar ──────────────────────────────────────────────────────────────
+say "Bajando la imagen publicada (GHCR)…"
+if ( cd docker && docker compose --env-file "${REPO_DIR}/.env" pull 2>/dev/null ); then
+  say "Imagen publicada lista."
+else
+  say "No pude bajar la imagen publicada (¿privada, o aún no publicada?). Construyo localmente…"
+  ( cd docker && docker compose --env-file "${REPO_DIR}/.env" build )
+fi
 say "Arrancando el contenedor…"
 ( cd docker && docker compose --env-file "${REPO_DIR}/.env" up -d )
 sleep 6

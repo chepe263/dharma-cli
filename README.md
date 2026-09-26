@@ -57,15 +57,36 @@ Todo el estado (chats, config, memoria) vive en el volumen Docker
 
 ### La imagen del contenedor
 
-El `compose.yaml` usa por defecto la imagen **publicada** en GHCR
-(`ghcr.io/chepe263/dharma-kirocrew:latest`) — trae Node, .NET y PHP horneados,
-así que en la máquina nueva es `docker pull` (segundos), no compilar. Esa imagen
-la construye y publica GitHub Actions (`.github/workflows/publicar-imagen.yml`)
-en cada cambio del `docker/Dockerfile`, con botón manual, y semanalmente para
-rehornear sobre el KiroCrew oficial más reciente.
+El `compose.yaml` trae **dos fuentes** para la imagen (Node/.NET/PHP horneados):
+la **publicada** en GHCR (`ghcr.io/chepe263/dharma-kirocrew:latest`, hecha por
+GitHub Actions) y la **build local** (`docker/Dockerfile`). Ojo con el matiz de
+Docker Compose: `docker compose up` a secas usa la imagen local si ya existe y,
+si no, la **construye** — NO baja la de GHCR sola. Por eso, para usar la de
+GitHub hay que pedirla explícitamente:
 
-- **Construir localmente** en vez de bajar la publicada: `cd docker && docker compose build`
-- **Usar otra imagen**: exporta `DHARMA_IMAGE=...` antes de `docker compose up`.
+```bash
+cd docker
+
+# ── Usar la imagen PUBLICADA en GitHub (bajar, no compilar) ──
+docker compose pull            # baja ghcr.io/chepe263/dharma-kirocrew:latest
+docker compose up -d           # la usa
+# (o en un paso)  docker compose up -d --pull always
+
+# ── Construir LOCALMENTE en su lugar (usa CPU tuyo) ──
+docker compose build
+docker compose up -d
+
+# ── Con perfil de base de datos (MariaDB) ──
+docker compose --profile db up -d --pull always
+```
+
+`install.sh` hace el camino de imagen publicada por ti. Para fijar otra imagen o
+tag: `export DHARMA_IMAGE=ghcr.io/chepe263/dharma-kirocrew:sha-abc1234`.
+
+La imagen la construye y publica GitHub Actions
+(`.github/workflows/publicar-imagen.yml`) en cada cambio del `docker/Dockerfile`,
+con botón manual (Run workflow), y semanalmente para rehornear sobre el KiroCrew
+oficial más reciente.
 
 > **Paso manual una sola vez (dueño del repo):** tras la PRIMERA corrida del
 > workflow, el paquete en GHCR nace **privado**. Para poder `docker pull` sin
