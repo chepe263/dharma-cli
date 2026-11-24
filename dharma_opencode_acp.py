@@ -35,6 +35,52 @@ SESSION_REGISTRY = os.path.expanduser("~/.kiro/crew/dharma_opencode_sessions.jso
 # efímeras (título, sugerencias, tareas); todas comparten la misma conversación
 # de OpenCode. El trabajo paralelo se hace con subagentes (task) dentro de ella.
 SESSION_MAP = os.path.expanduser("~/.kiro/crew/dharma_session_map.json")
+# Volcado diagnóstico de las tramas ACP (DHARMA_ACP_DUMP=ruta). Se usa para
+# descubrir qué identificador estable envía Kiro Crew en session/new. Nunca
+# subir este archivo a git: puede contener prompts del usuario.
+DUMP_PATH = os.environ.get("DHARMA_ACP_DUMP", "").strip()
+_REDACT_KEYS = ("token", "secret", "password", "api_key", "apikey", "credential", "cookie")
+
+
+def _mask(value) -> str:
+    """Huella corta en vez del secreto: permite comparar si dos tramas traen
+    la misma credencial sin escribirla en el dump."""
+    return "sha256:" + hashlib.sha256(str(value).encode("utf-8")).hexdigest()[:12]
+
+
+def _redact(value):
+    if isinstance(value, dict):
+        # env entries are {"name": "...TOKEN...", "value": "..."}: the secret
+        # lives in `value`, so judge the sibling `name` too.
+        named = str(value.get("name", "")).lower()
+        named_secret = any(s in named for s in _REDACT_KEYS)
+        return {
+            k: (_mask(v)
+                if (any(s in str(k).lower() for s in _REDACT_KEYS)
+                    or (named_secret and str(k).lower() == "value"))
+                else _redact(v))
+            for k, v in value.items()
+        }
+    if isinstance(value, list):
+        return [_redact(v) for v in value[:80]]
+    if isinstance(value, str):
+        return value[:3000]
+    return value
+
+
+def _dump(direction: str, msg: dict) -> None:
+    if not DUMP_PATH:
+        return
+    try:
+        line = json.dumps({"ts": time.time(), "dir": direction, "msg": _redact(msg)},
+                          ensure_ascii=False) + "\n"
+        fd = os.open(DUMP_PATH, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        try:
+            os.write(fd, line.encode("utf-8"))
+        finally:
+            os.close(fd)
+    except (OSError, TypeError, ValueError):
+        pass
 CHILD_REQUEST_ID = 700000
 KIRO_PERMISSION_ID = 800000
 
@@ -79,14 +125,12 @@ def _map_read() -> dict:
         return {}
 
 
-def _map_get(cwd: str) -> str:
-    key = hashlib.sha256(cwd.encode("utf-8")).hexdigest()[:24]
+def _map_get(key: str) -> str:
     sid = _map_read().get(key, "")
     return sid if isinstance(sid, str) else ""
 
 
-def _map_set(cwd: str, session_id: str) -> None:
-    key = hashlib.sha256(cwd.encode("utf-8")).hexdigest()[:24]
+def _map_set(key: str, session_id: str) -> None:
     data = _map_read()
     data[key] = session_id
     try:
@@ -95,6 +139,23 @@ def _map_set(cwd: str, session_id: str) -> None:
             json.dump(data, fh)
     except OSError as exc:  # noqa: BLE001
         d._log(f"no pude persistir el mapa de sesiones: {exc}")
+
+
+def _session_key(params: dict, cwd: str) -> str:
+    """Clave estable para agrupar las sesiones efímeras de Kiro Crew.
+
+    Volcado ACP (DHARMA_ACP_DUMP) de 3 chats / ~10 turnos: `session/new` SOLO
+    trae `cwd` y `mcpServers`; `clientCapabilities` no trae slot/thread id;
+    `_kiro.dev/commands/execute` y `session/prompt` solo repiten el sessionId
+    que NOSOTROS devolvimos. El `KIROCREW_STUB_SESSION_TOKEN` de mcpServers
+    cambia en CADA proceso efímero (3 turnos del mismo chat -> 3 tokens), así
+    que agrupar por él CREABA una sesión por turno. `modeId` identifica el
+    skill-view del agente, no el chat. Conclusión: el único dato estable que
+    Kiro entrega al backend es el `cwd`; una sesión de OpenCode por directorio
+    es el máximo que se puede agrupar sin parchear Kiro Crew para que envíe
+    un `slot_key`/chat id en `session/new`.
+    """
+    return "cwd-" + hashlib.sha256(cwd.encode("utf-8")).hexdigest()[:24]
 
 
 class _Lines:
@@ -136,7 +197,7 @@ class Bridge:
         self.perm_to_kiro = {}     # child_id -> kiro_id
         self.session_id = ""
         self.last_new_params = {}  # para reintentar session/new si un load falla
-        self.pending_cwd = ""      # cwd del session/new en curso
+        self.pending_key = ""      # clave (chat) del session/new en curso
         self.init_waiting = None   # kiro_id del initialize
         self.child_env = dict(os.environ)
         # Para que OpenCode pida permiso por herramienta y Kiro Crew muestre la
@@ -220,13 +281,13 @@ class Bridge:
             if not os.path.isabs(str(cwd)):
                 cwd = os.getcwd()
             self.last_new_params = {"cwd": cwd, "mcpServers": params.get("mcpServers") or []}
-            self.pending_cwd = cwd
-            existing = _map_get(cwd)
+            self.pending_key = _session_key(params, cwd)
+            existing = _map_get(self.pending_key)
             if existing:
-                # Misma conversación de OpenCode para TODAS las sesiones de Kiro
-                # en este workspace: una sola sesión, con subagentes dentro.
+                # Mismo chat de Kiro -> misma conversación de OpenCode, aunque
+                # Kiro abra muchas sesiones ACP efímeras para ese chat.
                 self.session_id = existing
-                d._log(f"session/new -> reutiliza {existing}")
+                d._log(f"session/new [{self.pending_key}] -> reutiliza {existing}")
                 self.to_child("session/load", {"sessionId": existing,
                                                 **self.last_new_params}, kid, "load")
             else:
@@ -240,7 +301,7 @@ class Bridge:
                 cwd = os.getcwd()
             self.session_id = params.get("sessionId") or ""
             self.last_new_params = {"cwd": cwd, "mcpServers": params.get("mcpServers") or []}
-            self.pending_cwd = cwd
+            self.pending_key = _session_key(params, cwd)
             self.to_child("session/load", {
                 "sessionId": self.session_id,
                 **self.last_new_params,
@@ -338,8 +399,8 @@ class Bridge:
             self.session_id = (result or {}).get("sessionId", "")
             if kind in ("session/new", "session/new_first"):
                 _registry_add(self.session_id)  # solo las nuevas, no las cargadas
-            if self.pending_cwd:
-                _map_set(self.pending_cwd, self.session_id)
+            if self.pending_key:
+                _map_set(self.pending_key, self.session_id)
             d._log(f"opencode acp session ({kind}): {self.session_id}")
             self._reply_session(kid)
             self._apply_model()
@@ -401,8 +462,10 @@ def main() -> int:
                     except json.JSONDecodeError:
                         continue
                     if src is kiro:
+                        _dump("kiro->dharma", msg)
                         bridge.on_kiro(msg)
                     else:
+                        _dump("opencode->dharma", msg)
                         bridge.on_child(msg)
     except KeyboardInterrupt:
         pass

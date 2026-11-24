@@ -53,12 +53,19 @@ Kiro Crew igual que con el `kiro-cli` real.
 
 El puente anuncia **`loadSession: true`** y mantiene **una sesión de OpenCode
 por workspace** (`~/.kiro/crew/dharma_session_map.json`, clave = hash del
-`cwd`). Kiro Crew hace Many `session/new` efímeras (título, sugerencias,
+`cwd`). Kiro Crew hace muchas `session/new` efímeras (título, sugerencias,
 consolidación), pero todas las del mismo directorio se traducen a un único
 `session/load` de OpenCode: el historial se conserva y no se acumula una sesión
 por solicitud. El trabajo paralelo se hace con los subagentes (`task`) de
 OpenCode dentro de esa sesión; sus frames con `_meta.opencode/child-session` y
 sus peticiones de permiso se reenvían a Kiro Crew tal cual.
+
+> ¿Por qué no una sesión por **chat**? Volcando las tramas con
+> `DHARMA_ACP_DUMP=ruta` se ve que `session/new` solo trae `cwd` y
+> `mcpServers`; no hay slot/thread id. `KIROCREW_STUB_SESSION_TOKEN` cambia en
+> cada proceso efímero (no identifica el chat) y `modeId` identifica el agente.
+> El único dato estable que el backend recibe es el `cwd`. Para agrupar por
+> chat haría falta que Kiro Crew enviara un id de chat en `session/new`.
 
 Las sesiones creadas se anotan en `~/.kiro/crew/dharma_opencode_sessions.json`;
 el temporizador semanal `kirocrew-session-cleanup.timer` borra las viejas
