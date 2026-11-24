@@ -10,6 +10,10 @@ import json
 import sys
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
+# Si se pasa un segundo argumento, cada petición escribe ahí sus headers (en
+# minúsculas) como JSON por línea. Solo para el verificador offline.
+HEADER_LOG = sys.argv[2] if len(sys.argv) > 2 else None
+
 
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *a):
@@ -20,6 +24,9 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.flush()
 
     def do_POST(self):
+        if HEADER_LOG:
+            with open(HEADER_LOG, "a", encoding="utf-8") as fh:
+                fh.write(json.dumps({k.lower(): v for k, v in self.headers.items()}) + "\n")
         length = int(self.headers.get("Content-Length", 0))
         try:
             req = json.loads(self.rfile.read(length))

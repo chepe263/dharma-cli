@@ -15,6 +15,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 import time
 
 PROTOCOL_VERSION = "2025-08-22"
@@ -28,10 +29,13 @@ class Fail(Exception):
 
 def main() -> int:
     here = os.path.dirname(os.path.abspath(__file__))
+    header_log = os.path.join(tempfile.gettempdir(), f"dharma-headers-{os.getpid()}.log")
+    if os.path.exists(header_log):
+        os.remove(header_log)
 
-    # 1. boot the stub OpenAI endpoint (127.0.0.1 only)
+    # 1. boot the stub OpenAI endpoint (127.0.0.1 only), logging request headers
     stub = subprocess.Popen(
-        [sys.executable, "stub_openai_server.py", str(STUB_PORT)], cwd=here
+        [sys.executable, "stub_openai_server.py", str(STUB_PORT), header_log], cwd=here
     )
     time.sleep(0.6)
 
@@ -40,6 +44,8 @@ def main() -> int:
     env["DHARMA_BASE_URL"] = f"http://127.0.0.1:{STUB_PORT}/v1"
     env["DHARMA_API_KEY"] = "stub-ignored"
     env["DHARMA_MODEL"] = "stub-model"
+    env["DHARMA_BACKEND"] = "openai-http"   # este test es del modo HTTP
+    env["DHARMA_APPROVAL"] = "0"            # sin UI para aprobar: ejecutar directo
     proc = subprocess.Popen(
         [sys.executable, "dharma_cli.py", "--agent", AGENT],
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, bufsize=1,
@@ -126,6 +132,20 @@ def main() -> int:
         results.append("✅ function calling: el modelo pidió una herramienta, el faux la ejecutó y realimentó el resultado")
         results.append(f"   respuesta final: {text!r}")
 
+        # Capa de headers: OpenCode Go exige x-opencode-session estable + UA propio.
+        with open(header_log, "r", encoding="utf-8") as fh:
+            seen = [json.loads(line) for line in fh if line.strip()]
+        if not seen:
+            raise Fail("el stub no recibió ninguna petición")
+        sessions = {h.get("x-opencode-session") for h in seen}
+        if not sessions or None in sessions:
+            raise Fail(f"falta x-opencode-session en las peticiones: {sessions}")
+        if len(sessions) != 1:
+            raise Fail(f"x-opencode-session no fue estable entre turnos: {sessions}")
+        if any(h.get("user-agent") != "dharma-cli/0.2.0" for h in seen):
+            raise Fail("falta el user-agent propio de dharma-cli")
+        results.append(f"✅ headers: x-opencode-session={next(iter(sessions))!r}, user-agent propio")
+
     except Fail as e:
         for r in results:
             print(r)
@@ -140,6 +160,8 @@ def main() -> int:
                 p.wait(timeout=3)
             except Exception:
                 p.kill()
+        if os.path.exists(header_log):
+            os.remove(header_log)
 
     for r in results:
         print(r)

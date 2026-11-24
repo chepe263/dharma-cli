@@ -1,9 +1,10 @@
 # dharma-cli
 
 Un binario que se hace pasar por `kiro-cli` ante **Kiro Crew**, pero que por
-dentro habla con **cualquier endpoint compatible con OpenAI** (Ollama Cloud, un
-Ollama local, OpenAI, LM Studio…). Objetivo: correr Kiro Crew con tu propio
-modelo, sin el servicio de Amazon y sin lock-in.
+dentro habla con **OpenCode Go** (vía `opencode acp`) o con **cualquier endpoint
+compatible con OpenAI** (Ollama Cloud, un Ollama local, OpenAI, LM Studio…).
+Objetivo: correr Kiro Crew sin pagar `kiro-cli`, sin el servicio de Amazon y sin
+lock-in.
 
 > **El nombre.** De la serie *Dharma & Greg*: Dharma es el espíritu libre, sin
 > ataduras; Greg es el abogado formal y estructurado, atado a las reglas de su
@@ -33,6 +34,52 @@ como notificaciones ACP. Kiro Crew no nota la diferencia.
 Kiro Crew  ──ACP (stdio)──►  dharma_cli.py  ──HTTP /v1/chat/completions──►  tu modelo
            ◄──streaming────                    ◄──────SSE (stream)──────────
 ```
+
+## Backend recomendado: puente ACP a OpenCode (sin API key)
+
+Si ya tienes OpenCode con un plan **Go**, no necesitas API key de Console ni
+configurar headers: el propio CLI ya autentica y ya envía `x-opencode-session`.
+Dharma actúa como **traductor de dialectos ACP**:
+
+```
+Kiro Crew ──ACP kiro (2025-08-22)──► dharma_opencode_acp.py ──ACP v1──► opencode acp ──► opencode-go/...
+           ◄──tool_call / chunks────         ◄──tool_call / chunks──────
+```
+
+Traduce `initialize`, `session/new`, `session/set_model`
+(→ `session/set_config_option`), `session/prompt`, `session/cancel`, cierre de
+sesión y `session/request_permission`. Las herramientas y sus tarjetas llegan a
+Kiro Crew igual que con el `kiro-cli` real.
+
+```bash
+# .env
+DHARMA_BACKEND=opencode-acp
+DHARMA_OPENCODE_BIN=opencode
+DHARMA_OPENCODE_MODEL=hungerg-free     # gratis; también hy4-flash-free, beam-free...
+
+python3 verify_acp_bridge.py           # prueba en vivo, sin coste con modelos free
+```
+
+> ¿Por qué no seleccionar directamente el backend `opencode` de Kiro Crew?
+> Kiro Crew 0.13.x solo acepta OpenCode **major 1.x**; con OpenCode 2.x el launch
+> se rechaza (`_OPENCODE_TESTED_MAJOR = 1`). El puente evita ese cerrojo porque
+> Kiro Crew cree que está usando el harness `kiro`.
+
+### Modo HTTP (alternativa)
+
+Con `DHARMA_BACKEND=openai-http` (el default de siempre) dharma llama directo al
+endpoint. Para OpenCode Go:
+
+```bash
+DHARMA_BASE_URL=https://opencode.ai/inference/go/openai/v1
+DHARMA_API_KEY=oc_sk_...                       # API key de OpenCode Console
+DHARMA_MODEL=hy4-flash-free
+```
+
+Dharma añade automáticamente `Authorization: Bearer ...`, un `User-Agent` propio
+y un **`x-opencode-session` estable por conversación** (ligado al `sessionId`
+ACP), que es lo que Go exige para enrutar y reutilizar la caché de prompt.
+También puedes inyectar headers arbitrarios con `DHARMA_EXTRA_HEADERS` (JSON).
 
 ## Instalar en una máquina nueva (Docker — recomendado)
 
@@ -160,21 +207,21 @@ paso — ver *Roadmap*.
 
 ## Archivos
 
-- `dharma_cli.py` — el faux backend (ACP ↔ OpenAI-compatible). Sin dependencias.
-- `verify.py` — verificador de protocolo de capa 1.
+- `dharma_cli.py` — el faux backend: one-shots, modo HTTP y despacho al puente ACP.
+- `dharma_opencode_acp.py` — puente ACP kiro ↔ ACP v1 hacia `opencode acp`.
+- `verify.py` — verificador offline del modo HTTP (comprueba el header de sesión).
+- `verify_acp_bridge.py` — verificador en vivo del puente ACP (modelos free).
 - `stub_openai_server.py` — endpoint OpenAI falso, solo para las pruebas offline.
 - `.env.example` — plantilla de configuración.
 
 ## Roadmap
 
-1. **Herramientas (function calling).** Hoy funciona el texto simple. Falta mapear
-   las peticiones de herramienta de ACP (`session/request_permission`) ↔ el campo
-   `tools` de la API OpenAI (Ollama lo soporta). Es la pieza técnica de verdad.
-2. **Flujo de primera vez / login.** Que Kiro Crew dé por satisfecho su
-   prerrequisito sin el SSO de Amazon (con la API key configurada aquí).
-3. **Backend de primera clase.** En vez de suplantar el binario, registrar un
-   backend nuevo (`ACP_BACKEND_OPENAI`) siguiendo `harness-onboarding.md` de Kiro
-   Crew — más robusto que imitar el dialecto exacto de kiro-cli.
+1. ~~Herramientas (function calling).~~ **Hecho** en ambos modos: el modo HTTP
+   ejecuta las tools propias; el puente ACP reenvía las de OpenCode.
+2. ~~Flujo de primera vez / login.~~ **Hecho**: los one-shots (`whoami`,
+   `--list-models`, `login`) se responden sin Amazon SSO.
+3. **Arranque de Kiro Crew sin CLI.** Dejar un lanzador que exporte
+   `KIROCREW_KIRO_BIN` hacia dharma y fije `agent.acp_backend: "kiro"`.
 4. **Docker + Playwright.** Contenedor desechable para el bucle autónomo
    construir→verificar→corregir, y Playwright para validar el uso real por la web.
 

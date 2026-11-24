@@ -15,9 +15,31 @@ and streams the reply back as ACP `agent_message_chunk` notifications.
 
 CONFIG (via .env in the working dir, or real environment variables):
   DHARMA_BASE_URL   OpenAI-compatible base, e.g. https://ollama.com/v1
-  DHARMA_API_KEY    Bearer token (Ollama Cloud: your ollama.com API key)
+                    OpenCode Go: https://opencode.ai/inference/go/openai/v1
+  DHARMA_API_KEY    Bearer token (Ollama Cloud: your ollama.com API key;
+                    OpenCode Go: your Console oc_sk_... key)
   DHARMA_MODEL      model id, e.g. gpt-oss:20b  or  gemma4:cloud
   DHARMA_APPROVAL   1 = ask before sensitive tools (default), 0 = run directly
+  DHARMA_SESSION_ID stable session id to send in x-opencode-session. When unset,
+                    one is generated and bound to the ACP sessionId, so OpenCode
+                    Go can route the conversation and reuse its prompt cache.
+  DHARMA_SESSION_HEADER_NAME  header name (default: x-opencode-session)
+  DHARMA_EXTRA_HEADERS  JSON object of extra headers, e.g. {"X-Foo":"bar"}
+  DHARMA_USER_AGENT     own user agent (default: dharma-cli/0.2.0). Go asks
+                        clients to identify themselves instead of using a
+                        generic HTTP-library name.
+
+BACKENDS:
+  DHARMA_BACKEND=openai-http (default) -> calls BASE_URL/chat/completions.
+  DHARMA_BACKEND=opencode-acp          -> ACP bridge to `opencode acp`. OpenCode
+                        owns provider auth, x-opencode-session, prompt caching,
+                        tools and approvals. No API key needed in dharma.
+                        (`opencode-cli` is accepted as an alias.)
+  DHARMA_OPENCODE_BIN       opencode binary (default: opencode)
+  DHARMA_OPENCODE_MODEL     model id for the opencode-acp backend
+                            (default: hy4-flash-free; passed as opencode-go/<id>)
+  DHARMA_OPENCODE_MODEL_PREFIX  provider prefix (default: opencode-go/)
+  DHARMA_OPENCODE_EXTRA_ARGS    extra args for `opencode acp` (shell-split)
 
 No third-party dependencies — stdlib only (urllib). Python 3.8+.
 
@@ -27,9 +49,13 @@ Wire format confirmed against the KiroCrew clone at commit 07a05a2:
 """
 import json
 import os
+import re
+import shlex
+import subprocess
 import sys
 import urllib.request
 import urllib.error
+import uuid
 
 PROTOCOL_VERSION = "2025-08-22"
 
@@ -57,6 +83,93 @@ BASE_URL = os.environ.get("DHARMA_BASE_URL", "https://ollama.com/v1").rstrip("/"
 API_KEY = os.environ.get("DHARMA_API_KEY", "")
 MODEL = os.environ.get("DHARMA_MODEL", "gpt-oss:20b")
 
+# ── backend: HTTP directo o puente ACP hacia el CLI de OpenCode ───────────────
+# `opencode-acp` es la ruta sin API key propia: el CLI ya está autenticado y ya
+# envía x-opencode-session, así que dharma solo traduce ACP kiro <-> ACP v1.
+BACKEND = os.environ.get("DHARMA_BACKEND", "openai-http").strip().lower()
+# `opencode-cli` se acepta como alias histórico de `opencode-acp`.
+if BACKEND == "opencode-cli":
+    BACKEND = "opencode-acp"
+OPENCODE_BIN = os.environ.get("DHARMA_OPENCODE_BIN", "opencode").strip() or "opencode"
+OPENCODE_MODEL_PREFIX = os.environ.get("DHARMA_OPENCODE_MODEL_PREFIX", "opencode-go/").strip()
+OPENCODE_EXTRA_ARGS = shlex.split(os.environ.get("DHARMA_OPENCODE_EXTRA_ARGS", ""))
+if BACKEND == "opencode-acp":
+    _oc_model = os.environ.get("DHARMA_OPENCODE_MODEL", "").strip()
+    if _oc_model:
+        MODEL = _oc_model
+    elif not os.environ.get("DHARMA_MODEL"):
+        MODEL = "hy4-flash-free"  # gratis en OpenCode Go, con tools
+
+_OPENCODE_SESSIONS = {}  # sessionId ACP -> sessionId de `opencode run`
+
+
+def _opencode_model_id(model: str) -> str:
+    """Los IDs del picker vienen sin prefijo; el CLI quiere `opencode-go/<id>`."""
+    model = (model or ACTIVE_MODEL or MODEL).strip()
+    if not model or "/" in model:
+        return model or MODEL
+    return f"{OPENCODE_MODEL_PREFIX}{model}"
+
+
+def _opencode_session_id(kiro_session_id: str) -> str:
+    """Un ID estable por conversación para el historial/caché de OpenCode."""
+    sid = _OPENCODE_SESSIONS.get(kiro_session_id)
+    if not sid:
+        clean = re.sub(r"[^A-Za-z0-9_-]", "-", str(kiro_session_id))[:40]
+        sid = "ses_dharma_" + clean + "_" + uuid.uuid4().hex[:8]
+        _OPENCODE_SESSIONS[kiro_session_id] = sid
+    return sid
+
+
+# ── proveedores que exigen headers de sesión (OpenCode Go) ─────────────────────
+# Go necesita un ID ESTABLE por conversación en `x-opencode-session` para enrutar
+# y reutilizar la caché de prompt. Lo enviamos en TODA llamada al endpoint. Si el
+# usuario no fija uno, generamos uno al arrancar y lo ligamos al sessionId ACP
+# que Kiro Crew nos devuelve (estable aunque el gateway se reinicie).
+EXTRA_HEADERS = {}
+_raw_extra = os.environ.get("DHARMA_EXTRA_HEADERS", "").strip()
+if _raw_extra:
+    try:
+        _parsed_extra = json.loads(_raw_extra)
+        if isinstance(_parsed_extra, dict):
+            EXTRA_HEADERS = {str(k): str(v) for k, v in _parsed_extra.items()}
+        else:
+            sys.stderr.write("[dharma] DHARMA_EXTRA_HEADERS debe ser un objeto JSON; ignorando\n")
+    except json.JSONDecodeError as _e:
+        sys.stderr.write(f"[dharma] DHARMA_EXTRA_HEADERS inválido ({_e}); ignorando\n")
+
+USER_AGENT = os.environ.get("DHARMA_USER_AGENT", "dharma-cli/0.2.0")
+SESSION_HEADER_NAME = os.environ.get("DHARMA_SESSION_HEADER_NAME", "x-opencode-session") or "x-opencode-session"
+SESSION_HEADER_VALUE = os.environ.get("DHARMA_SESSION_ID", "").strip()
+if not SESSION_HEADER_VALUE:
+    SESSION_HEADER_VALUE = "dharma-" + uuid.uuid4().hex
+_SESSION_ID_PINNED = bool(os.environ.get("DHARMA_SESSION_ID", "").strip())
+
+
+def _http_headers(with_content_type: bool = True) -> dict:
+    """Headers comunes para /models y /chat/completions (auth + sesión + extras)."""
+    headers = {}
+    if with_content_type:
+        headers["Content-Type"] = "application/json"
+    if API_KEY:
+        headers["Authorization"] = f"Bearer {API_KEY}"
+    if USER_AGENT:
+        headers["User-Agent"] = USER_AGENT
+    if SESSION_HEADER_NAME and SESSION_HEADER_VALUE:
+        headers[SESSION_HEADER_NAME] = SESSION_HEADER_VALUE
+    headers.update(EXTRA_HEADERS)
+    return headers
+
+
+def _bind_session(kiro_session_id: str) -> None:
+    """Liga el header de sesión al ID de sesión ACP de Kiro Crew (si no es fijo)."""
+    global SESSION_HEADER_VALUE
+    if _SESSION_ID_PINNED or not kiro_session_id:
+        return
+    clean = re.sub(r"[^A-Za-z0-9._:-]", "-", str(kiro_session_id))[:120]
+    if clean:
+        SESSION_HEADER_VALUE = "dharma-" + clean
+
 
 # ── one-shot commands (faux-ted from the real kiro-cli output) ─────────────────
 # KiroCrew runs these OUTSIDE ACP to check "is the agent installed / logged in".
@@ -65,9 +178,51 @@ MODEL = os.environ.get("DHARMA_MODEL", "gpt-oss:20b")
 # SSO requirement. Shapes captured verbatim from `kiro-cli 2.24.0` on the host.
 
 
+def _catalog_from_ids(ids, fallback_model: str) -> dict:
+    """Map a list of model ids to the shape KiroCrew parses."""
+    if not ids:
+        return {"models": [
+            {"model_name": "auto", "description": "dharma default", "model_id": "auto",
+             "context_window_tokens": 128000, "rate_multiplier": 0.0, "rate_unit": "Free"},
+            {"model_name": fallback_model, "description": f"dharma model ({fallback_model})",
+             "model_id": fallback_model, "context_window_tokens": 128000,
+             "rate_multiplier": 0.0, "rate_unit": "Free"},
+        ], "default_model": "auto"}
+    ordered = [fallback_model] + [m for m in ids if m != fallback_model]
+    return {"models": [
+        {"model_name": mid, "description": f"dharma: {mid}", "model_id": mid,
+         "context_window_tokens": 128000, "rate_multiplier": 0.0, "rate_unit": "Free"}
+        for mid in ordered
+    ], "default_model": fallback_model}
+
+
+def _opencode_models_catalog() -> dict:
+    """Model list from `opencode models`, with the provider prefix stripped so the
+    picker sends ids dharma can map back with _opencode_model_id()."""
+    try:
+        out = subprocess.run([OPENCODE_BIN, "models"], capture_output=True,
+                             text=True, timeout=25).stdout
+        ids = []
+        for line in out.splitlines():
+            mid = line.strip()
+            if not mid:
+                continue
+            if "/" in mid:
+                prefix, name = mid.split("/", 1)
+                ids.append(name if prefix + "/" == OPENCODE_MODEL_PREFIX else mid)
+            else:
+                ids.append(mid)
+        return _catalog_from_ids(ids, MODEL)
+    except Exception as e:  # noqa: BLE001
+        _log(f"list-models: `opencode models` falló ({type(e).__name__}: {e}); usando fallback")
+        return _catalog_from_ids([], MODEL)
+
+
 def _list_models_catalog() -> dict:
-    """Ask the OpenAI-compatible endpoint for its real model list (GET /v1/models)
-    and map it to the shape KiroCrew parses. Falls back to the configured model."""
+    """Ask the backend for its real model list and map it to KiroCrew's shape."""
+    if BACKEND == "opencode-acp":
+        return _opencode_models_catalog()
+
     def _fallback() -> dict:
         return {"models": [
             {"model_name": "auto", "description": "dharma default", "model_id": "auto",
@@ -77,9 +232,8 @@ def _list_models_catalog() -> dict:
         ], "default_model": "auto"}
 
     try:
-        req = urllib.request.Request(f"{BASE_URL}/models", method="GET")
-        if API_KEY:
-            req.add_header("Authorization", f"Bearer {API_KEY}")
+        req = urllib.request.Request(
+            f"{BASE_URL}/models", headers=_http_headers(with_content_type=False), method="GET")
         with urllib.request.urlopen(req, timeout=15) as resp:
             data = json.loads(resp.read().decode("utf-8"))
         ids = [m.get("id") for m in (data.get("data") or []) if m.get("id")]
@@ -105,7 +259,7 @@ def _handle_one_shot() -> bool:
 
     # `kiro-cli --version`  -> "kiro-cli <ver>"
     if argv[0] == "--version":
-        print("kiro-cli 2.24.0-dharma")
+        print("kiro-cli 2.27.0")
         return True
 
     # `kiro-cli acp --help`  -> KiroCrew's readiness probe runs this to confirm
@@ -118,16 +272,18 @@ def _handle_one_shot() -> bool:
 
     # `kiro-cli whoami [--format json]`  -> identity. We fake a satisfied login.
     if argv[0] == "whoami":
+        endpoint = ("https://opencode.ai/inference/go" if BACKEND == "opencode-acp"
+                    else BASE_URL)
         if "--format" in argv and "json" in argv:
             print(json.dumps({
                 "accountType": "Dharma",
                 "email": "dharma@localhost",
                 "region": "local",
-                "startUrl": BASE_URL,
+                "startUrl": endpoint,
             }))
         else:
             print("Logged in with dharma backend")
-            print(f"Endpoint: {BASE_URL}")
+            print(f"Endpoint: {endpoint}")
         return True
 
     # `kiro-cli chat --list-models --format json`  -> model catalog.
@@ -446,9 +602,7 @@ def _chat_stream(messages: list, on_text) -> dict:
     if supports_tools:
         payload["tools"] = TOOLS_SPEC
     body = json.dumps(payload).encode("utf-8")
-    headers = {"Content-Type": "application/json"}
-    if API_KEY:
-        headers["Authorization"] = f"Bearer {API_KEY}"
+    headers = _http_headers()
     req = urllib.request.Request(url, data=body, headers=headers, method="POST")
 
     content_parts = []
@@ -710,8 +864,10 @@ def main() -> int:
         return 0
 
     agent = _agent_from_argv()
-    session_id = "dharma-session-1"
-    _log(f"started: base_url={BASE_URL} model={MODEL} agent={agent} auth={'yes' if API_KEY else 'no'}")
+    session_id = SESSION_HEADER_VALUE  # id estable que Kiro Crew verá y nos devolverá
+    _log(f"started: base_url={BASE_URL} model={MODEL} agent={agent} auth={'yes' if API_KEY else 'no'} "
+         f"session_header={SESSION_HEADER_NAME}={'set' if SESSION_HEADER_VALUE else 'unset'} "
+         f"extra_headers={len(EXTRA_HEADERS)} ua={USER_AGENT}")
 
     for line in sys.stdin:
         line = line.strip()
@@ -733,6 +889,7 @@ def main() -> int:
             }})
 
         elif method == "session/new":
+            _bind_session(session_id)
             _send({"jsonrpc": "2.0", "id": msg_id, "result": {
                 "sessionId": session_id,
                 "modes": {
@@ -759,6 +916,7 @@ def main() -> int:
         elif method == "session/prompt":
             params = msg.get("params") or {}
             sid = params.get("sessionId", session_id)
+            _bind_session(sid)  # header estable por conversación (prompt cache de Go)
             prompt_text = _extract_prompt_text(params)
             _CANCELLED = False  # nuevo turno, limpiar cancelación previa
             # _run_turn drives the full function-calling loop and closes the
@@ -779,4 +937,7 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    if BACKEND == "opencode-acp":
+        from dharma_opencode_acp import main as _bridge_main
+        sys.exit(_bridge_main())
     sys.exit(main())
