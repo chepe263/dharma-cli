@@ -52,20 +52,25 @@ sesión y `session/request_permission`. Las herramientas y sus tarjetas llegan a
 Kiro Crew igual que con el `kiro-cli` real.
 
 El puente anuncia **`loadSession: true`** y mantiene **una sesión de OpenCode
-por workspace** (`~/.kiro/crew/dharma_session_map.json`, clave = hash del
-`cwd`). Kiro Crew hace muchas `session/new` efímeras (título, sugerencias,
-consolidación), pero todas las del mismo directorio se traducen a un único
+por chat de Kiro** (`~/.kiro/crew/dharma_session_map.json`). El chat key es el
+`sid=chat-<n>-<ts>` que sale en la URL del dashboard (`dashboard:chat-...`).
+Kiro Crew hace muchas `session/new` efímeras por chat (título, sugerencias,
+consolidación); todas las que traen el mismo `sessionKey` se traducen a un único
 `session/load` de OpenCode: el historial se conserva y no se acumula una sesión
-por solicitud. El trabajo paralelo se hace con los subagentes (`task`) de
-OpenCode dentro de esa sesión; sus frames con `_meta.opencode/child-session` y
-sus peticiones de permiso se reenvían a Kiro Crew tal cual.
+por solicitud. Las tareas de fondo sin `sessionKey` caen al `cwd`.
 
-> ¿Por qué no una sesión por **chat**? Volcando las tramas con
-> `DHARMA_ACP_DUMP=ruta` se ve que `session/new` solo trae `cwd` y
-> `mcpServers`; no hay slot/thread id. `KIROCREW_STUB_SESSION_TOKEN` cambia en
-> cada proceso efímero (no identifica el chat) y `modeId` identifica el agente.
-> El único dato estable que el backend recibe es el `cwd`. Para agrupar por
-> chat haría falta que Kiro Crew enviara un id de chat en `session/new`.
+Kiro Crew **no manda ese `sid` en `session/new`** en la ruta `AcpRuntime` (es la
+que usa este gateway; `KIROCREW_SESSION_KEY` solo se exporta en `AcpClient`).
+Para exponerlo sin tocar `/opt` (root, no editable) se usa un overlay
+`sitecustomize.py` cargado con `PYTHONPATH` desde la unidad systemd: envuelve
+`AcpRuntime.create_session` y `build_session_new_params` y añade
+`params["_meta"]["kiro"]["sessionKey"]`. Archivo:
+`~/.config/kirocrew-dharma/sitecustomize.py`. Si se quita esa variable de
+`PYTHONPATH`, dharma cae al fallback por `cwd`.
+
+El trabajo paralelo se hace con los subagentes (`task`) de OpenCode dentro de
+esa sesión; sus frames con `_meta.opencode/child-session` y sus peticiones de
+permiso se reenvían a Kiro Crew tal cual.
 
 Las sesiones creadas se anotan en `~/.kiro/crew/dharma_opencode_sessions.json`;
 el temporizador semanal `kirocrew-session-cleanup.timer` borra las viejas

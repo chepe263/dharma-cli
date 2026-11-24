@@ -144,17 +144,30 @@ def _map_set(key: str, session_id: str) -> None:
 def _session_key(params: dict, cwd: str) -> str:
     """Clave estable para agrupar las sesiones efímeras de Kiro Crew.
 
-    Volcado ACP (DHARMA_ACP_DUMP) de 3 chats / ~10 turnos: `session/new` SOLO
-    trae `cwd` y `mcpServers`; `clientCapabilities` no trae slot/thread id;
-    `_kiro.dev/commands/execute` y `session/prompt` solo repiten el sessionId
-    que NOSOTROS devolvimos. El `KIROCREW_STUB_SESSION_TOKEN` de mcpServers
-    cambia en CADA proceso efímero (3 turnos del mismo chat -> 3 tokens), así
-    que agrupar por él CREABA una sesión por turno. `modeId` identifica el
-    skill-view del agente, no el chat. Conclusión: el único dato estable que
-    Kiro entrega al backend es el `cwd`; una sesión de OpenCode por directorio
-    es el máximo que se puede agrupar sin parchear Kiro Crew para que envíe
-    un `slot_key`/chat id en `session/new`.
+    El `sid=chat-<n>-<ts>` de la URL del dashboard ES el session key de Kiro.
+    Llega al backend de dos formas:
+      * `KIROCREW_SESSION_KEY` en el env del hijo (ruta AcpClient, 1 proc/sesión);
+      * `KIROCREW_SESSION_LABEL` dentro de `mcpServers[].env` (ruta AcpRuntime,
+        la que usa este gateway), gracias al opt-in `x-kirocrew-session-label`
+        en el spec del agente.
+    Ni el `KIROCREW_STUB_SESSION_TOKEN` (cambia por proceso) ni el `modeId`
+    (identifica el agente) sirven: se descartaron con el volcado ACP.
     """
+    meta = params.get("_meta") or {}
+    kiro_meta = meta.get("kiro") or {}
+    sid = str(kiro_meta.get("sessionKey") or "").strip()
+    if sid:
+        return "chat-" + sid
+    env_key = os.environ.get("KIROCREW_SESSION_KEY", "").strip()
+    if env_key:
+        return "chat-" + env_key
+    for server in params.get("mcpServers") or []:
+        for entry in server.get("env") or []:
+            name = str(entry.get("name", ""))
+            if "SESSION_LABEL" in name.upper():
+                value = str(entry.get("value", "")).strip()
+                if value:
+                    return "chat-" + value
     return "cwd-" + hashlib.sha256(cwd.encode("utf-8")).hexdigest()[:24]
 
 
@@ -430,6 +443,13 @@ def main() -> int:
     bridge = Bridge(agent)
     cmd = [d.OPENCODE_BIN, "acp"] + d.OPENCODE_EXTRA_ARGS
     d._log(f"starting ACP bridge: {cmd[0]} acp | agent={agent} | model={d.MODEL}")
+    # Diagnóstico: ¿qué marca de sesión trae el spawn de Kiro Crew?
+    env_marks = {}
+    for name in ("KIROCREW_SESSION_KEY", "KIROCREW_CHANNEL_ID", "KIROCREW_SLACK_TEAM_ID",
+                 "KIRO_CLI_CLIENT_APPLICATION", "KIROCREW_SPAWNED", "KIROCREW_RUNTIME_AGENT"):
+        value = os.environ.get(name, "")
+        env_marks[name] = _mask(value) if value and "KEY" in name else value
+    _dump("spawn-env", {"argv": sys.argv[1:], "env": env_marks})
 
     try:
         bridge.child = subprocess.Popen(
