@@ -51,6 +51,18 @@ Traduce `initialize`, `session/new`, `session/set_model`
 sesión y `session/request_permission`. Las herramientas y sus tarjetas llegan a
 Kiro Crew igual que con el `kiro-cli` real.
 
+El puente anuncia **`loadSession: true`**: cuando Kiro Crew restaura un chat
+usa `session/load` de OpenCode en vez de crear una sesión nueva, así que el
+historial se conserva y no se acumulan conversaciones vacías. Las sesiones
+creadas se anotan en `~/.kiro/crew/dharma_opencode_sessions.json`; el
+temporizador semanal `kirocrew-session-cleanup.timer` borra las viejas
+(conserva las 20 más recientes y hasta 14 días). Para forzar la limpieza:
+
+```bash
+python3 cleanup_opencode_sessions.py            # simulación
+python3 cleanup_opencode_sessions.py --apply    # borrar
+```
+
 ```bash
 # .env
 DHARMA_BACKEND=opencode-acp

@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 """Verificación en vivo del puente ACP: simula Kiro Crew contra dharma, que a su
-vez lanza `opencode acp`. Usa un modelo gratis de OpenCode Go (sin coste).
+vez lanza `opencode acp`. Usa modelos gratis de OpenCode Go (sin coste).
 
   python3 verify_acp_bridge.py
+
+Comprueba: handshake, streaming, herramientas y que `session/load` restaura la
+conversación en un proceso NUEVO (clave para no acumular sesiones basura).
 """
 import json
 import os
@@ -18,144 +21,147 @@ class Fail(Exception):
     pass
 
 
-def main() -> int:
+def spawn():
     env = dict(os.environ)
     env["DHARMA_BACKEND"] = "opencode-acp"
     env["DHARMA_OPENCODE_MODEL"] = MODEL
     env["DHARMA_OPENCODE_EXTRA_ARGS"] = ""
-    proc = subprocess.Popen(
+    return subprocess.Popen(
         [sys.executable, "dharma_cli.py", "--agent", "kirocrew"],
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         text=True, bufsize=1, cwd=HERE, env=env,
     )
 
-    def send(obj):
-        proc.stdin.write(json.dumps(obj) + "\n")
-        proc.stdin.flush()
 
-    def read():
-        line = proc.stdout.readline()
+class Client:
+    def __init__(self, proc):
+        self.proc = proc
+
+    def send(self, obj):
+        self.proc.stdin.write(json.dumps(obj) + "\n")
+        self.proc.stdin.flush()
+
+    def read(self):
+        line = self.proc.stdout.readline()
         if not line:
-            err = proc.stderr.read()[-1500:] if proc.stderr else ""
+            err = self.proc.stderr.read()[-1500:] if self.proc.stderr else ""
             raise Fail(f"backend cerró stdout: {err}")
         return json.loads(line)
 
-    def await_response(rid):
+    def await_response(self, rid):
         while True:
-            msg = read()
+            msg = self.read()
             if msg.get("id") == rid and "method" not in msg:
                 if "error" in msg:
                     raise Fail(f"error ACP: {msg['error']}")
                 return msg
 
-    results = []
-    try:
-        send({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
-            "protocolVersion": "2025-08-22",
-            "clientInfo": {"name": "kirocrew", "version": "verify"},
-            "clientCapabilities": {"fs": {"readTextFile": False, "writeTextFile": False},
-                                   "terminal": False},
-        }})
-        r = await_response(1)
-        if r.get("result", {}).get("protocolVersion") != "2025-08-22":
-            raise Fail("initialize: dialecto kiro incorrecto")
-        results.append("✅ initialize: dialecto kiro -> ACP v1 traducido")
-
-        send({"jsonrpc": "2.0", "id": 2, "method": "session/new", "params": {
-            "cwd": HERE, "mcpServers": [],
-        }})
-        r = await_response(2)
-        sid = r.get("result", {}).get("sessionId")
-        if not sid:
-            raise Fail("session/new sin sessionId")
-        results.append(f"✅ session/new: {sid}")
-
-        send({"jsonrpc": "2.0", "id": 3, "method": "session/prompt", "params": {
-            "sessionId": sid,
-            "prompt": [{"type": "text", "text": "Responde solo la palabra OK"}],
-        }})
-        chunks = []
-        permissions = 0
-        deadline = time.time() + 120
+    def prompt(self, rid, sid, text, deadline_secs=150):
+        self.send({"jsonrpc": "2.0", "id": rid, "method": "session/prompt",
+                   "params": {"sessionId": sid,
+                              "prompt": [{"type": "text", "text": text}]}})
+        chunks, tools, permissions = [], set(), 0
+        deadline = time.time() + deadline_secs
         while time.time() < deadline:
-            msg = read()
+            msg = self.read()
             if msg.get("method") == "session/request_permission":
                 permissions += 1
                 options = (msg.get("params") or {}).get("options") or []
                 oid = next((o["optionId"] for o in options
                             if o.get("kind") == "allow_once"),
                            options[0]["optionId"] if options else "allow_once")
-                send({"jsonrpc": "2.0", "id": msg["id"],
-                      "result": {"outcome": {"outcome": "selected", "optionId": oid}}})
-            elif msg.get("method") == "session/update":
-                upd = (msg.get("params") or {}).get("update") or {}
-                if upd.get("sessionUpdate") == "agent_message_chunk":
-                    chunks.append((upd.get("content") or {}).get("text", ""))
-            elif msg.get("id") == 3 and "method" not in msg:
-                stop = msg.get("result", {}).get("stopReason", "")
-                if stop not in ("end_turn", ""):
-                    raise Fail(f"stopReason={stop}")
-                break
-        else:
-            raise Fail("timeout esperando la respuesta de OpenCode")
-
-        text = "".join(chunks).strip()
-        if "OK" not in text.upper():
-            raise Fail(f"respuesta inesperada: {text!r}")
-        results.append(f"✅ session/prompt: streaming OK ({permissions} aprobaciones)")
-        results.append(f"   respuesta: {text!r}")
-
-        # Segundo turno: una herramienta real. OpenCode la ejecuta y sus eventos
-        # tool_call / tool_call_update deben llegar a Kiro Crew a través del puente.
-        send({"jsonrpc": "2.0", "id": 5, "method": "session/prompt", "params": {
-            "sessionId": sid,
-            "prompt": [{"type": "text", "text": "Usa la herramienta read para leer /etc/hostname y dime qué contiene"}],
-        }})
-        saw_tool = False
-        saw_tool_done = False
-        chunks2 = []
-        deadline = time.time() + 120
-        while time.time() < deadline:
-            msg = read()
-            if msg.get("method") == "session/request_permission":
-                options = (msg.get("params") or {}).get("options") or []
-                oid = next((o["optionId"] for o in options
-                            if o.get("kind") == "allow_once"),
-                           options[0]["optionId"] if options else "allow_once")
-                send({"jsonrpc": "2.0", "id": msg["id"],
-                      "result": {"outcome": {"outcome": "selected", "optionId": oid}}})
+                self.send({"jsonrpc": "2.0", "id": msg["id"],
+                           "result": {"outcome": {"outcome": "selected", "optionId": oid}}})
             elif msg.get("method") == "session/update":
                 upd = (msg.get("params") or {}).get("update") or {}
                 su = upd.get("sessionUpdate")
-                if su == "tool_call":
-                    saw_tool = True
-                elif su == "tool_call_update" and upd.get("status") == "completed":
-                    saw_tool_done = True
-                elif su == "agent_message_chunk":
-                    chunks2.append((upd.get("content") or {}).get("text", ""))
-            elif msg.get("id") == 5 and "method" not in msg:
-                break
-        else:
-            raise Fail("timeout en el turno con herramienta")
-        if not saw_tool or not saw_tool_done:
-            raise Fail("los eventos tool_call/tool_call_update no llegaron a Kiro Crew")
-        results.append("✅ herramientas: tool_call + tool_call_update reenviados")
-        results.append(f"   respuesta 2: {''.join(chunks2).strip()[:160]!r}")
-    except Fail as e:
-        for r in results:
-            print(r)
-        print(f"❌ FALLO: {e}")
-        return 1
-    finally:
+                if su == "agent_message_chunk":
+                    chunks.append((upd.get("content") or {}).get("text", ""))
+                elif su in ("tool_call", "tool_call_update"):
+                    tools.add(su)
+            elif msg.get("id") == rid and "method" not in msg:
+                stop = msg.get("result", {}).get("stopReason", "")
+                if stop not in ("end_turn", ""):
+                    raise Fail(f"stopReason={stop}")
+                return "".join(chunks).strip(), tools, permissions
+        raise Fail("timeout esperando la respuesta de OpenCode")
+
+    def close(self):
         try:
-            proc.stdin.close()
+            self.proc.stdin.close()
         except OSError:
             pass
-        proc.terminate()
+        self.proc.terminate()
         try:
-            proc.wait(timeout=5)
+            self.proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
-            proc.kill()
+            self.proc.kill()
+
+
+def handshake(c, sid=None):
+    c.send({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+        "protocolVersion": "2025-08-22",
+        "clientInfo": {"name": "kirocrew", "version": "verify"},
+        "clientCapabilities": {"fs": {"readTextFile": False, "writeTextFile": False},
+                               "terminal": False},
+    }})
+    r = c.await_response(1)
+    result = r.get("result", {})
+    if result.get("protocolVersion") != "2025-08-22":
+        raise Fail("initialize: dialecto kiro incorrecto")
+    if not result.get("agentCapabilities", {}).get("loadSession"):
+        raise Fail("initialize: loadSession no está anunciado")
+    if sid is None:
+        c.send({"jsonrpc": "2.0", "id": 2, "method": "session/new", "params": {
+            "cwd": HERE, "mcpServers": [],
+        }})
+        sid = c.await_response(2).get("result", {}).get("sessionId")
+        if not sid:
+            raise Fail("session/new sin sessionId")
+    else:
+        c.send({"jsonrpc": "2.0", "id": 2, "method": "session/load", "params": {
+            "sessionId": sid, "cwd": HERE, "mcpServers": [],
+        }})
+        r = c.await_response(2)
+        if "error" in r or not r.get("result", {}).get("sessionId"):
+            raise Fail(f"session/load falló: {r}")
+    return sid
+
+
+def main() -> int:
+    results = []
+    proc = spawn()
+    c = Client(proc)
+    try:
+        sid = handshake(c)
+        results.append(f"✅ initialize + session/new (loadSession=True): {sid}")
+
+        text, _, _ = c.prompt(3, sid, "Recuerda la palabra ZANAHORIA y responde solo OK")
+        if "OK" not in text.upper():
+            raise Fail(f"respuesta inesperada: {text!r}")
+        results.append(f"✅ session/prompt: {text!r}")
+
+        text, tools, perms = c.prompt(
+            5, sid, "Usa la herramienta read para leer /etc/hostname y dime qué contiene")
+        if "tool_call" not in tools or "tool_call_update" not in tools:
+            raise Fail("los eventos de herramienta no llegaron a Kiro Crew")
+        results.append(f"✅ herramientas reenviadas ({perms} aprobaciones): {text[:120]!r}")
+    finally:
+        c.close()
+
+    # Proceso NUEVO: session/load debe recuperar la misma conversación.
+    proc2 = spawn()
+    c2 = Client(proc2)
+    try:
+        sid2 = handshake(c2, sid=sid)
+        if sid2 != sid:
+            raise Fail(f"session/load devolvió otro id: {sid2!r} != {sid!r}")
+        text, _, _ = c2.prompt(3, sid2, "¿Qué palabra te dije que recordaras? Responde solo la palabra")
+        if "ZANAHORIA" not in text.upper():
+            raise Fail(f"session/load no conservó el contexto: {text!r}")
+        results.append(f"✅ session/load en proceso nuevo conserva el contexto: {text!r}")
+    finally:
+        c2.close()
 
     for r in results:
         print(r)

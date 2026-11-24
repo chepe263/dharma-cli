@@ -22,10 +22,14 @@ import os
 import select
 import subprocess
 import sys
+import time
 
 import dharma_cli as d
 
 KIRO_PROTOCOL_VERSION = "2025-08-22"
+# Registro de las sesiones de OpenCode que crea este puente. Solo se usa para
+# limpiar las viejas: nunca toca sesiones creadas por el usuario en OpenCode.
+SESSION_REGISTRY = os.path.expanduser("~/.kiro/crew/dharma_opencode_sessions.json")
 CHILD_REQUEST_ID = 700000
 KIRO_PERMISSION_ID = 800000
 
@@ -38,6 +42,27 @@ FORWARD_UPDATES = {
     "tool_call_update",
     "plan",
 }
+
+
+def _registry_read() -> list:
+    try:
+        with open(SESSION_REGISTRY, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        return data if isinstance(data, list) else []
+    except (OSError, ValueError):
+        return []
+
+
+def _registry_add(session_id: str) -> None:
+    """Anotar una sesión NUEVA del puente para poder limpiarla después."""
+    rows = [r for r in _registry_read() if r.get("id") != session_id]
+    rows.append({"id": session_id, "created": time.time()})
+    try:
+        os.makedirs(os.path.dirname(SESSION_REGISTRY), exist_ok=True)
+        with open(SESSION_REGISTRY, "w", encoding="utf-8") as fh:
+            json.dump(rows, fh)
+    except OSError as exc:  # noqa: BLE001
+        d._log(f"no pude registrar la sesión para limpieza: {exc}")
 
 
 class _Lines:
@@ -78,6 +103,7 @@ class Bridge:
         self.perm_to_child = {}    # kiro_id -> child_id
         self.perm_to_kiro = {}     # child_id -> kiro_id
         self.session_id = ""
+        self.last_new_params = {}  # para reintentar session/new si un load falla
         self.init_waiting = None   # kiro_id del initialize
         self.child_env = dict(os.environ)
         # Para que OpenCode pida permiso por herramienta y Kiro Crew muestre la
@@ -108,6 +134,23 @@ class Bridge:
         else:
             msg["result"] = result if result is not None else {}
         self.to_kiro(msg)
+
+    def _reply_session(self, kiro_id) -> None:
+        """Respuesta común a session/new y session/load en dialecto kiro."""
+        self.reply_kiro(kiro_id, {
+            "sessionId": self.session_id,
+            "modes": {
+                "currentModeId": self.agent,
+                "availableModes": [{"id": self.agent, "name": self.agent, "description": ""}],
+            },
+        })
+
+    def _apply_model(self) -> None:
+        """Fijar el modelo elegido también al restaurar una sesión."""
+        model = d._opencode_model_id(d.ACTIVE_MODEL)
+        self.to_child("session/set_config_option", {
+            "sessionId": self.session_id, "configId": "model", "value": model,
+        }, None, "set_model")
 
     # ── arrival de mensajes ─────────────────────────────────────────────────
     def on_kiro(self, msg: dict) -> None:
@@ -143,10 +186,21 @@ class Bridge:
             cwd = params.get("cwd") or os.getcwd()
             if not os.path.isabs(str(cwd)):
                 cwd = os.getcwd()
-            self.to_child("session/new", {
-                "cwd": cwd,
-                "mcpServers": params.get("mcpServers") or [],
-            }, kid, "session/new")
+            self.last_new_params = {"cwd": cwd, "mcpServers": params.get("mcpServers") or []}
+            self.to_child("session/new", dict(self.last_new_params), kid, "session/new")
+            return
+
+        if method == "session/load":
+            params = msg.get("params") or {}
+            cwd = params.get("cwd") or os.getcwd()
+            if not os.path.isabs(str(cwd)):
+                cwd = os.getcwd()
+            self.session_id = params.get("sessionId") or ""
+            self.last_new_params = {"cwd": cwd, "mcpServers": params.get("mcpServers") or []}
+            self.to_child("session/load", {
+                "sessionId": self.session_id,
+                **self.last_new_params,
+            }, kid, "load")
             return
 
         if method == "session/set_model":
@@ -228,27 +282,30 @@ class Bridge:
             self.init_waiting = None
             self.reply_kiro(kid, {
                 "protocolVersion": KIRO_PROTOCOL_VERSION,
-                "agentCapabilities": {"loadSession": False},
+                # Kiro Crew reutiliza las conversaciones con session/load en vez
+                # de crear una sesión nueva en cada arranque/worker efímero.
+                "agentCapabilities": {"loadSession": True},
                 "agentInfo": {"name": "dharma-cli (opencode acp bridge)",
                               "version": "2.27.0"},
             })
             return
 
-        if kind == "session/new":
+        if kind in ("session/new", "load_retry"):
             self.session_id = (result or {}).get("sessionId", "")
-            d._log(f"opencode acp session: {self.session_id}")
-            self.reply_kiro(kid, {
-                "sessionId": self.session_id,
-                "modes": {
-                    "currentModeId": self.agent,
-                    "availableModes": [{"id": self.agent, "name": self.agent, "description": ""}],
-                },
-            })
-            # Aplicar el modelo configurado nada más crear la sesión.
-            model = d._opencode_model_id(d.ACTIVE_MODEL)
-            self.to_child("session/set_config_option", {
-                "sessionId": self.session_id, "configId": "model", "value": model,
-            }, None, "set_model")
+            if kind == "session/new":
+                _registry_add(self.session_id)  # solo las nouvelles, no las cargadas
+            d._log(f"opencode acp session ({kind}): {self.session_id}")
+            self._reply_session(kid)
+            self._apply_model()
+            return
+
+        if kind == "load":
+            if error:
+                d._log(f"session/load falló, creando una nueva: {error}")
+                self.to_child("session/new", dict(self.last_new_params), kid, "load_retry")
+                return
+            self._reply_session(kid)
+            self._apply_model()
             return
 
         if kind == "set_model":
