@@ -19,6 +19,28 @@ import time
 
 REGISTRY = os.path.expanduser("~/.kiro/crew/dharma_opencode_sessions.json")
 DEFAULT_BIN = os.environ.get("DHARMA_OPENCODE_BIN", "opencode")
+DB = os.path.join(
+    os.environ.get("XDG_DATA_HOME", os.path.expanduser("~/.local/share")),
+    "opencode", "opencode.db",
+)
+
+
+def _children_of(parent_ids: list) -> list:
+    """Sesiones hijas (subagentes de OpenCode) de las sesiones del registro."""
+    if not parent_ids:
+        return []
+    try:
+        import sqlite3  # stdlib
+        marks = ",".join("?" for _ in parent_ids)
+        con = sqlite3.connect(f"file:{DB}?mode=ro", uri=True)
+        rows = list(con.execute(
+            f"select id, time_created from session_v2 where parent_id in ({marks})",
+            parent_ids,
+        ))
+        con.close()
+        return [{"id": r[0], "created": (r[1] or 0) / 1000} for r in rows]
+    except Exception:  # noqa: BLE001 - si no hay DB, simplemente no hay hijas
+        return []
 
 
 def main() -> int:
@@ -49,7 +71,13 @@ def main() -> int:
               f"{args.max_age_days} días fuera de las {args.keep} recientes")
         return 0
 
-    for row in old:
+    # Los subagentes (task) viven como sesiones hijas: se borran con su padre.
+    children = _children_of([r["id"] for r in old])
+    if children:
+        print(f"   (+{len(children)} sesión(es) hija(s) de subagente)")
+    to_delete = children + old
+
+    for row in to_delete:
         sid = row.get("id", "")
         verb = "borrando" if args.apply else "borraría"
         if args.apply:

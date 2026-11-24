@@ -56,7 +56,8 @@ usa `session/load` de OpenCode en vez de crear una sesión nueva, así que el
 historial se conserva y no se acumulan conversaciones vacías. Las sesiones
 creadas se anotan en `~/.kiro/crew/dharma_opencode_sessions.json`; el
 temporizador semanal `kirocrew-session-cleanup.timer` borra las viejas
-(conserva las 20 más recientes y hasta 14 días). Para forzar la limpieza:
+(conserva las 20 más recientes y hasta 14 días), incluidas las sesiones
+**hijas** que OpenCode crea para sus subagentes (`task`). Para forzar:
 
 ```bash
 python3 cleanup_opencode_sessions.py            # simulación
