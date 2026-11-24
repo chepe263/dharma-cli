@@ -17,6 +17,7 @@ Métodos traducidos:
   session/request_permission (del child) -> la misma petición al cliente kiro
 Todo lo demás se responde vacío para no bloquear el handshake de Kiro Crew.
 """
+import hashlib
 import json
 import os
 import select
@@ -30,6 +31,10 @@ KIRO_PROTOCOL_VERSION = "2025-08-22"
 # Registro de las sesiones de OpenCode que crea este puente. Solo se usa para
 # limpiar las viejas: nunca toca sesiones creadas por el usuario en OpenCode.
 SESSION_REGISTRY = os.path.expanduser("~/.kiro/crew/dharma_opencode_sessions.json")
+# Un workspace (cwd) = UNA sesión de OpenCode. Kiro Crew crea muchas sesiones
+# efímeras (título, sugerencias, tareas); todas comparten la misma conversación
+# de OpenCode. El trabajo paralelo se hace con subagentes (task) dentro de ella.
+SESSION_MAP = os.path.expanduser("~/.kiro/crew/dharma_session_map.json")
 CHILD_REQUEST_ID = 700000
 KIRO_PERMISSION_ID = 800000
 
@@ -63,6 +68,33 @@ def _registry_add(session_id: str) -> None:
             json.dump(rows, fh)
     except OSError as exc:  # noqa: BLE001
         d._log(f"no pude registrar la sesión para limpieza: {exc}")
+
+
+def _map_read() -> dict:
+    try:
+        with open(SESSION_MAP, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _map_get(cwd: str) -> str:
+    key = hashlib.sha256(cwd.encode("utf-8")).hexdigest()[:24]
+    sid = _map_read().get(key, "")
+    return sid if isinstance(sid, str) else ""
+
+
+def _map_set(cwd: str, session_id: str) -> None:
+    key = hashlib.sha256(cwd.encode("utf-8")).hexdigest()[:24]
+    data = _map_read()
+    data[key] = session_id
+    try:
+        os.makedirs(os.path.dirname(SESSION_MAP), exist_ok=True)
+        with open(SESSION_MAP, "w", encoding="utf-8") as fh:
+            json.dump(data, fh)
+    except OSError as exc:  # noqa: BLE001
+        d._log(f"no pude persistir el mapa de sesiones: {exc}")
 
 
 class _Lines:
@@ -104,6 +136,7 @@ class Bridge:
         self.perm_to_kiro = {}     # child_id -> kiro_id
         self.session_id = ""
         self.last_new_params = {}  # para reintentar session/new si un load falla
+        self.pending_cwd = ""      # cwd del session/new en curso
         self.init_waiting = None   # kiro_id del initialize
         self.child_env = dict(os.environ)
         # Para que OpenCode pida permiso por herramienta y Kiro Crew muestre la
@@ -187,7 +220,17 @@ class Bridge:
             if not os.path.isabs(str(cwd)):
                 cwd = os.getcwd()
             self.last_new_params = {"cwd": cwd, "mcpServers": params.get("mcpServers") or []}
-            self.to_child("session/new", dict(self.last_new_params), kid, "session/new")
+            self.pending_cwd = cwd
+            existing = _map_get(cwd)
+            if existing:
+                # Misma conversación de OpenCode para TODAS las sesiones de Kiro
+                # en este workspace: una sola sesión, con subagentes dentro.
+                self.session_id = existing
+                d._log(f"session/new -> reutiliza {existing}")
+                self.to_child("session/load", {"sessionId": existing,
+                                                **self.last_new_params}, kid, "load")
+            else:
+                self.to_child("session/new", dict(self.last_new_params), kid, "session/new_first")
             return
 
         if method == "session/load":
@@ -197,6 +240,7 @@ class Bridge:
                 cwd = os.getcwd()
             self.session_id = params.get("sessionId") or ""
             self.last_new_params = {"cwd": cwd, "mcpServers": params.get("mcpServers") or []}
+            self.pending_cwd = cwd
             self.to_child("session/load", {
                 "sessionId": self.session_id,
                 **self.last_new_params,
@@ -290,10 +334,12 @@ class Bridge:
             })
             return
 
-        if kind in ("session/new", "load_retry"):
+        if kind in ("session/new", "session/new_first", "load_retry"):
             self.session_id = (result or {}).get("sessionId", "")
-            if kind == "session/new":
-                _registry_add(self.session_id)  # solo las nouvelles, no las cargadas
+            if kind in ("session/new", "session/new_first"):
+                _registry_add(self.session_id)  # solo las nuevas, no las cargadas
+            if self.pending_cwd:
+                _map_set(self.pending_cwd, self.session_id)
             d._log(f"opencode acp session ({kind}): {self.session_id}")
             self._reply_session(kid)
             self._apply_model()

@@ -23,6 +23,17 @@ DB = os.path.join(
     os.environ.get("XDG_DATA_HOME", os.path.expanduser("~/.local/share")),
     "opencode", "opencode.db",
 )
+# El puente mantiene UNA sesión viva por workspace: nunca la borramos.
+SESSION_MAP = os.path.expanduser("~/.kiro/crew/dharma_session_map.json")
+
+
+def _active_ids() -> set:
+    try:
+        with open(SESSION_MAP, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        return {v for v in data.values() if isinstance(v, str)}
+    except (OSError, ValueError):
+        return set()
 
 
 def _children_of(parent_ids: list) -> list:
@@ -62,7 +73,8 @@ def main() -> int:
 
     rows.sort(key=lambda r: r.get("created", 0), reverse=True)
     now = time.time()
-    keep = set(r["id"] for r in rows[:max(0, args.keep)])
+    active = _active_ids()
+    keep = set(r["id"] for r in rows[:max(0, args.keep)]) | active
     old = [r for r in rows
            if r.get("id") not in keep
            and now - r.get("created", 0) >= args.max_age_days * 86400]
