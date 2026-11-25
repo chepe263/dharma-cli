@@ -51,6 +51,13 @@ Traduce `initialize`, `session/new`, `session/set_model`
 sesión y `session/request_permission`. Las herramientas y sus tarjetas llegan a
 Kiro Crew igual que con el `kiro-cli` real.
 
+El **steering en mitad del turno** también funciona: Kiro Crew envía
+`_session/steer` (texto `<user_message>...</user_message>`); el puente responde
+`{queued: true}`, emite `steering_queued` / `steering_consumed` y mete el texto
+en el turno en curso de OpenCode como un segundo `session/prompt` (mecanismo de
+steering de OpenCode). Sin esto, Kiro se quedaba "pensando" con el mensaje en
+estado *steering*: el shim respondía `{}` y OpenCode nunca veía el texto.
+
 El puente anuncia **`loadSession: true`** y mantiene **una sesión de OpenCode
 por chat de Kiro** (`~/.kiro/crew/dharma_session_map.json`). El chat key es el
 `sid=chat-<n>-<ts>` que sale en la URL del dashboard (`dashboard:chat-...`).

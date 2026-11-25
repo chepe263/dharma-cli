@@ -208,6 +208,7 @@ class Bridge:
         self.pending = {}          # child_id -> (kiro_id, kind)
         self.perm_to_child = {}    # kiro_id -> child_id
         self.perm_to_kiro = {}     # child_id -> kiro_id
+        self.steer_text = {}       # child_id -> texto del steer (para el echo)
         self.session_id = ""
         self.last_new_params = {}  # para reintentar session/new si un load falla
         self.pending_key = ""      # clave (chat) del session/new en curso
@@ -258,6 +259,14 @@ class Bridge:
         self.to_child("session/set_config_option", {
             "sessionId": self.session_id, "configId": "model", "value": model,
         }, None, "set_model")
+
+    def _steer_update(self, sid: str, kind: str, text: str) -> None:
+        msg = {"jsonrpc": "2.0", "method": "session/update", "params": {
+            "sessionId": sid,
+            "update": {"sessionUpdate": kind, "content": text},
+        }}
+        _dump("dharma->kiro", msg)
+        self.to_kiro(msg)
 
     # ── arrival de mensajes ─────────────────────────────────────────────────
     def on_kiro(self, msg: dict) -> None:
@@ -340,6 +349,32 @@ class Bridge:
             self.to_child("session/prompt", msg.get("params") or {}, kid, "prompt")
             return
 
+        # Kiro Crew steering (kiro-cli `_session/steer`): responde que encoló,
+        # avisa al cliente y mete el texto en el turno en curso de OpenCode como
+        # un SEGUNDO session/prompt (es el mecanismo de steering de OpenCode).
+        if method == "_session/steer":
+            params = msg.get("params") or {}
+            text = str(params.get("message") or "").strip()
+            if text.startswith("<user_message>") and text.endswith("</user_message>"):
+                text = text[len("<user_message>"):-len("</user_message>")].strip()
+            sid = params.get("sessionId") or self.session_id
+            self.reply_kiro(kid, {"queued": True})
+            self._steer_update(sid, "steering_queued", text)
+            if text:
+                cid = self.to_child("session/prompt", {
+                    "sessionId": sid,
+                    "prompt": [{"type": "text", "text": text}],
+                }, None, "steer_prompt")
+                self.steer_text[cid] = text
+                d._log(f"steer -> OpenCode ({len(text)} chars)")
+            return
+
+        if method == "_session/steer/clear":
+            self.reply_kiro(kid, {})
+            self._steer_update((msg.get("params") or {}).get("sessionId") or self.session_id,
+                               "steering_cleared", "")
+            return
+
         if method == "session/cancel":
             self.to_child("session/cancel", msg.get("params") or {}, kid, "cancel")
             return
@@ -395,6 +430,14 @@ class Bridge:
             return
         kid, kind = entry
         result, error = msg.get("result"), msg.get("error")
+
+        if kind == "steer_prompt":
+            text = self.steer_text.pop(cid, "")
+            if error:
+                d._log(f"steer rechazado por OpenCode: {error}")
+            # Señal autoritativa para Kiro: el steer fue consumido por el turno.
+            self._steer_update(self.session_id, "steering_consumed", text)
+            return
 
         if kind == "initialize":
             self.init_waiting = None
