@@ -190,10 +190,39 @@ def _verify_permission_posture(bridge: "Bridge") -> None:
             cwd=os.getcwd(), capture_output=True, text=True, timeout=30,
         )
         out = proc.stdout or ""
-        start = out.find("{")
+        start = min([i for i in (out.find("{"), out.find("[")) if i >= 0], default=-1)
         if proc.returncode != 0 or start < 0:
             raise ValueError(f"exit {proc.returncode}, sin JSON")
-        raw = (json.loads(out[start:]) or {}).get("permission")
+
+        def _find_permission(node):
+            if isinstance(node, dict):
+                if "permission" in node:
+                    return node["permission"]
+                for value in node.values():
+                    found = _find_permission(value)
+                    if found is not None:
+                        return found
+            elif isinstance(node, list):
+                for value in node:
+                    found = _find_permission(value)
+                    if found is not None:
+                        return found
+            return None
+
+        # v1 imprime un objeto; v2 imprime un ARRAY de documentos. Kiro lee
+        # el objeto, nosotros buscamos la clave en cualquier profundidad.
+        raw = _find_permission(json.loads(out[start:]))
+        if raw is None:
+            # OpenCode 2.x no publica `permission` en debug config. Comprobamos
+            # el seed que nosotros mismos pusimos: si el usuario trae su propio
+            # OPENCODE_CONFIG_CONTENT sin ask, sí avisamos.
+            seed = bridge.child_env.get("OPENCODE_CONFIG_CONTENT", "")
+            ok = '"ask"' in seed or "'ask'" in seed
+            _dump("diag", {"permission_readback": "seed-ask" if ok else "sin seed"})
+            if not ok:
+                d._log("WARNING: OPENCODE_CONFIG_CONTENT no pide ask; las herramientas "
+                       "pueden ejecutarse sin aprobación de Kiro")
+            return
         if isinstance(raw, str):
             ok = raw == "ask"
         elif isinstance(raw, dict) and raw:
@@ -208,6 +237,7 @@ def _verify_permission_posture(bridge: "Bridge") -> None:
         else:
             d._log("permission read-back: ask confirmado")
     except Exception as exc:  # noqa: BLE001
+        _dump("diag", {"permission_readback": f"ERROR: {exc}"})
         d._log(f"WARNING: no pude verificar permission con `opencode debug config`: {exc}")
 
 
