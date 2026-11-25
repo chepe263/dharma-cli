@@ -83,6 +83,14 @@ def _dump(direction: str, msg: dict) -> None:
         pass
 CHILD_REQUEST_ID = 700000
 KIRO_PERMISSION_ID = 800000
+# Métodos de Kiro que se pueden acknowledgear vacío SIN ocultar una función:
+# son extensiones del dialecto kiro que el harness ACP no necesita ejecutar.
+# Cualquier OTRO método se responde -32601 (fail closed): responder {} a un
+# método no soportado fue exactamente lo que hizo invisible el steering.
+EMPTY_OK_METHODS = {
+    "session/set_mode",
+    "_kiro.dev/commands/execute",
+}
 
 # Actualizaciones que Kiro Crew sabe renderizar. El resto (usage_update,
 # available_commands_update, config_option_update, ...) se descarta.
@@ -171,6 +179,38 @@ def _session_key(params: dict, cwd: str) -> str:
     return "cwd-" + hashlib.sha256(cwd.encode("utf-8")).hexdigest()[:24]
 
 
+def _verify_permission_posture(bridge: "Bridge") -> None:
+    """Copiado del adaptador `opencode` de Kiro Crew: sembrar `ask` no basta,
+    hay que leer la configuración RESUELTA y comprobar que entró en vigor.
+    Si no, las tools de OpenCode correrían sin pasar por la UI de Kiro.
+    """
+    try:
+        proc = subprocess.run(
+            [d.OPENCODE_BIN, "debug", "config"], env=bridge.child_env,
+            cwd=os.getcwd(), capture_output=True, text=True, timeout=30,
+        )
+        out = proc.stdout or ""
+        start = out.find("{")
+        if proc.returncode != 0 or start < 0:
+            raise ValueError(f"exit {proc.returncode}, sin JSON")
+        raw = (json.loads(out[start:]) or {}).get("permission")
+        if isinstance(raw, str):
+            ok = raw == "ask"
+        elif isinstance(raw, dict) and raw:
+            values = {v for v in raw.values() if isinstance(v, str)}
+            ok = values == {"ask"}
+        else:
+            ok = False
+        _dump("diag", {"permission_readback": "ask" if ok else str(raw)[:200]})
+        if not ok:
+            d._log("WARNING: OpenCode no resolvió permission=ask; las herramientas "
+                   "pueden ejecutarse sin aprobación de Kiro. Revisa OPENCODE_CONFIG_CONTENT")
+        else:
+            d._log("permission read-back: ask confirmado")
+    except Exception as exc:  # noqa: BLE001
+        d._log(f"WARNING: no pude verificar permission con `opencode debug config`: {exc}")
+
+
 class _Lines:
     """Lee líneas de un fd sin bloquear, con buffer propio (select + os.read)."""
 
@@ -209,6 +249,8 @@ class Bridge:
         self.perm_to_child = {}    # kiro_id -> child_id
         self.perm_to_kiro = {}     # child_id -> kiro_id
         self.steer_text = {}       # child_id -> texto del steer (para el echo)
+        self.active_prompts = set()  # child_ids de prompts en curso
+        self.steer_queue = []        # steers esperando a que el turno termine
         self.session_id = ""
         self.last_new_params = {}  # para reintentar session/new si un load falla
         self.pending_key = ""      # clave (chat) del session/new en curso
@@ -259,6 +301,32 @@ class Bridge:
         self.to_child("session/set_config_option", {
             "sessionId": self.session_id, "configId": "model", "value": model,
         }, None, "set_model")
+
+    def _send_steer(self, sid: str, text: str) -> None:
+        """Meter un steer en OpenCode. Si hay un prompt activo, se encola:
+        OpenCode rechaza un segundo session/prompt mientras el primero corre
+        ('Session already has an active ACP prompt'). Es el mismo criterio
+        que _steer_via_concurrent_prompt del adaptador opencode de Kiro Crew.
+        """
+        if not text:
+            return
+        if self.active_prompts:
+            self.steer_queue.append((sid, text))
+            d._log(f"steer encolado ({len(text)} chars, turno activo)")
+            return
+        cid = self.to_child("session/prompt", {
+            "sessionId": sid,
+            "prompt": [{"type": "text", "text": text}],
+        }, None, "steer_prompt")
+        self.active_prompts.add(cid)
+        self.steer_text[cid] = text
+        d._log(f"steer -> OpenCode ({len(text)} chars)")
+
+    def _drain_steers(self) -> None:
+        if self.active_prompts or not self.steer_queue:
+            return
+        sid, text = self.steer_queue.pop(0)
+        self._send_steer(sid, text)
 
     def _steer_update(self, sid: str, kind: str, text: str) -> None:
         msg = {"jsonrpc": "2.0", "method": "session/update", "params": {
@@ -346,7 +414,8 @@ class Bridge:
             return
 
         if method == "session/prompt":
-            self.to_child("session/prompt", msg.get("params") or {}, kid, "prompt")
+            cid = self.to_child("session/prompt", msg.get("params") or {}, kid, "prompt")
+            self.active_prompts.add(cid)
             return
 
         # Kiro Crew steering (kiro-cli `_session/steer`): responde que encoló,
@@ -360,13 +429,7 @@ class Bridge:
             sid = params.get("sessionId") or self.session_id
             self.reply_kiro(kid, {"queued": True})
             self._steer_update(sid, "steering_queued", text)
-            if text:
-                cid = self.to_child("session/prompt", {
-                    "sessionId": sid,
-                    "prompt": [{"type": "text", "text": text}],
-                }, None, "steer_prompt")
-                self.steer_text[cid] = text
-                d._log(f"steer -> OpenCode ({len(text)} chars)")
+            self._send_steer(sid, text)
             return
 
         if method == "_session/steer/clear":
@@ -393,8 +456,14 @@ class Bridge:
             self.reply_kiro(kid, {})
             return
 
-        # extensiones kiro que OpenCode no conoce: acknowledgment
-        self.reply_kiro(kid, {})
+        # Fail closed: si Kiro inventa un método nuevo, un {} lo haría creer
+        # que funcionó (y dejaría el chat colgado esperando una señal).
+        if method in EMPTY_OK_METHODS:
+            self.reply_kiro(kid, {})
+        else:
+            d._log(f"método ACP no soportado por el puente: {method}")
+            self.reply_kiro(kid, error={"code": -32601,
+                                        "message": f"Method not found: {method}"})
 
     def _child_write(self, obj: dict) -> None:
         self.child.stdin.write((json.dumps(obj) + "\n").encode("utf-8"))
@@ -432,11 +501,23 @@ class Bridge:
         result, error = msg.get("result"), msg.get("error")
 
         if kind == "steer_prompt":
+            self.active_prompts.discard(cid)
             text = self.steer_text.pop(cid, "")
             if error:
                 d._log(f"steer rechazado por OpenCode: {error}")
-            # Señal autoritativa para Kiro: el steer fue consumido por el turno.
-            self._steer_update(self.session_id, "steering_consumed", text)
+                # Un rechazo por turno activo se reintenta cuando éste cierre.
+                if "active ACP prompt" in json.dumps(error):
+                    self.steer_queue.append((self.session_id, text))
+            else:
+                # Señal autoritativa para Kiro: el steer fue consumido.
+                self._steer_update(self.session_id, "steering_consumed", text)
+            self._drain_steers()
+            return
+
+        if kind == "prompt":
+            self.active_prompts.discard(cid)
+            self.reply_kiro(kid, result, error)
+            self._drain_steers()
             return
 
         if kind == "initialize":
@@ -507,6 +588,8 @@ def main() -> int:
                                    f"[dharma ERROR] no se encontró {d.OPENCODE_BIN!r} en PATH"}},
         }})
         return 1
+
+    _verify_permission_posture(bridge)
 
     kiro = _Lines(sys.stdin.fileno())
     child = _Lines(bridge.child.stdout.fileno())
