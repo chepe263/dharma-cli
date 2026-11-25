@@ -280,7 +280,6 @@ class Bridge:
         self.perm_to_kiro = {}     # child_id -> kiro_id
         self.steer_text = {}       # child_id -> texto del steer (para el echo)
         self.active_prompts = set()  # child_ids de prompts en curso
-        self.steer_queue = []        # steers esperando a que el turno termine
         self.session_id = ""
         self.last_new_params = {}  # para reintentar session/new si un load falla
         self.pending_key = ""      # clave (chat) del session/new en curso
@@ -333,16 +332,11 @@ class Bridge:
         }, None, "set_model")
 
     def _send_steer(self, sid: str, text: str) -> None:
-        """Meter un steer en OpenCode. Si hay un prompt activo, se encola:
-        OpenCode rechaza un segundo session/prompt mientras el primero corre
-        ('Session already has an active ACP prompt'). Es el mismo criterio
-        que _steer_via_concurrent_prompt del adaptador opencode de Kiro Crew.
+        """Steer real: segundo session/prompt SOLO cuando no hay turno activo.
+        OpenCode 2.x rechaza dos prompts simultáneos; si hay uno activo, el
+        llamador ya respondió error para que Kiro encole el mensaje como QUEUED.
         """
         if not text:
-            return
-        if self.active_prompts:
-            self.steer_queue.append((sid, text))
-            d._log(f"steer encolado ({len(text)} chars, turno activo)")
             return
         cid = self.to_child("session/prompt", {
             "sessionId": sid,
@@ -351,12 +345,6 @@ class Bridge:
         self.active_prompts.add(cid)
         self.steer_text[cid] = text
         d._log(f"steer -> OpenCode ({len(text)} chars)")
-
-    def _drain_steers(self) -> None:
-        if self.active_prompts or not self.steer_queue:
-            return
-        sid, text = self.steer_queue.pop(0)
-        self._send_steer(sid, text)
 
     def _steer_update(self, sid: str, kind: str, text: str) -> None:
         msg = {"jsonrpc": "2.0", "method": "session/update", "params": {
@@ -448,15 +436,26 @@ class Bridge:
             self.active_prompts.add(cid)
             return
 
-        # Kiro Crew steering (kiro-cli `_session/steer`): responde que encoló,
-        # avisa al cliente y mete el texto en el turno en curso de OpenCode como
-        # un SEGUNDO session/prompt (es el mecanismo de steering de OpenCode).
+        # Kiro Crew steering (kiro-cli `_session/steer`). OpenCode 2.x NO admite
+        # dos session/prompt simultáneos (está documentado y el gate de Kiro
+        # solo certifica 1.x), así que NO podemos prometer un steer real.
+        # Si hay turno activo devolvemos error: chat_delivery.py ya atrapa la
+        # excepción, marca `steered=False` y encola el texto como mensaje
+        # QUEUED, que se enviará como turno normal al terminar. Eso es honesto:
+        # nunca queda un mensaje en "steering" esperando un consumed que no llega.
         if method == "_session/steer":
             params = msg.get("params") or {}
             text = str(params.get("message") or "").strip()
             if text.startswith("<user_message>") and text.endswith("</user_message>"):
                 text = text[len("<user_message>"):-len("</user_message>")].strip()
             sid = params.get("sessionId") or self.session_id
+            if self.active_prompts:
+                d._log(f"steer rechazado: turno activo; Kiro lo encolará ({len(text)} chars)")
+                self.reply_kiro(kid, error={
+                    "code": -32000,
+                    "message": "Steer not accepted: session has an active prompt; queue it",
+                })
+                return
             self.reply_kiro(kid, {"queued": True})
             self._steer_update(sid, "steering_queued", text)
             self._send_steer(sid, text)
@@ -535,19 +534,16 @@ class Bridge:
             text = self.steer_text.pop(cid, "")
             if error:
                 d._log(f"steer rechazado por OpenCode: {error}")
-                # Un rechazo por turno activo se reintenta cuando éste cierre.
-                if "active ACP prompt" in json.dumps(error):
-                    self.steer_queue.append((self.session_id, text))
+                # No fingimos consumo: cerramos el ledger de steering.
+                self._steer_update(self.session_id, "steering_cleared", "")
             else:
                 # Señal autoritativa para Kiro: el steer fue consumido.
                 self._steer_update(self.session_id, "steering_consumed", text)
-            self._drain_steers()
             return
 
         if kind == "prompt":
             self.active_prompts.discard(cid)
             self.reply_kiro(kid, result, error)
-            self._drain_steers()
             return
 
         if kind == "initialize":

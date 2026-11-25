@@ -51,12 +51,17 @@ Traduce `initialize`, `session/new`, `session/set_model`
 sesión y `session/request_permission`. Las herramientas y sus tarjetas llegan a
 Kiro Crew igual que con el `kiro-cli` real.
 
-El **steering en mitad del turno** también funciona: Kiro Crew envía
-`_session/steer` (texto `<user_message>...</user_message>`); el puente responde
-`{queued: true}`, emite `steering_queued` / `steering_consumed` y mete el texto
-en el turno en curso de OpenCode como un segundo `session/prompt` (mecanismo de
-steering de OpenCode). Sin esto, Kiro se quedaba "pensando" con el mensaje en
-estado *steering*: el shim respondía `{}` y OpenCode nunca veía el texto.
+Respecto al **steering**: OpenCode 2.x **no permite dos prompts a la vez**
+(está en su doc: “A session runs one prompt at a time”; por eso el gate nativo
+de Kiro solo certifica 1.x). El puente no finge lo que no puede hacer:
+
+- si no hay turno activo, acepta `_session/steer` con `{queued: true}`, emite
+  `steering_queued`/`steering_consumed` y mete el texto como `session/prompt`;
+- si hay un turno activo, **responde error**. `chat_delivery.py` de Kiro lo
+  atrapa (`steered=False`) y encola el texto como mensaje **QUEUED**, que se
+  envía como turno nuevo al terminar. Antes respondíamos `{queued: true}` y lo
+  inyectábamos al final: Kiro lo veía como un steering que nunca confirmaba y
+  luego aparecía pegado al turno anterior (“steering accidental”).
 
 El puente anuncia **`loadSession: true`** y mantiene **una sesión de OpenCode
 por chat de Kiro** (`~/.kiro/crew/dharma_session_map.json`). El chat key es el
